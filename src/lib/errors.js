@@ -43,7 +43,7 @@ const HINTS = {
   insufficient_quota: 'Your account is out of credit or over its billing limit for this provider.',
   rate_limited: 'The provider is rate limiting this key. Wait a moment and try again.',
   model_unavailable:
-    'That model id is not available to this key. Check the exact id in the provider dashboard.',
+    'That model id is not available to this key. Check the exact id in the provider dashboard or use Fetch models — dots, hyphens and slashes must match exactly.',
   endpoint_not_found:
     'The endpoint path was not found. Check the base URL — it usually ends with /v1.',
   invalid_request: 'The provider rejected the request. Review your custom request parameters.',
