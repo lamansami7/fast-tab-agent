@@ -121,6 +121,19 @@ test('cancellation before the first step', async () => {
   assert.equal(result.steps.length, 0);
 });
 
+test('cancellation after a slow model response prevents even a done response from advancing', async () => {
+  const controller = new AbortController();
+  const result = await runAgentTask(baseParams({
+    signal: controller.signal,
+    callModel: async () => {
+      controller.abort();
+      return { content: JSON.stringify({ done: true, answer: 'Unexpectedly late response.' }) };
+    },
+  }));
+  assert.equal(result.status, 'stopped');
+  assert.equal(result.steps.length, 0);
+});
+
 test('repeated action failures stop the run instead of looping', async () => {
   const callModel = modelQueue([{ action: { type: 'click', elementId: 1 } }]);
   const result = await runAgentTask(

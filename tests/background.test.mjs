@@ -19,6 +19,10 @@ const broadcasts = [];
 const executed = [];
 const fetchCalls = [];
 let modelCalls = 0;
+let holdNextFetch = false;
+let releaseHeldFetch = null;
+let hasHostPermission = true;
+const permissionChecks = [];
 
 const tab = { id: 7, status: 'complete', title: 'Shop', url: 'https://shop.example.com/products' };
 
@@ -47,7 +51,15 @@ function contentAgent(message) {
 
 globalThis.chrome = {
   storage: { local, session },
+  permissions: {
+    contains: async ({ origins }) => {
+      permissionChecks.push(...origins);
+      return hasHostPermission;
+    },
+  },
   runtime: {
+    id: 'test-extension',
+    getURL: (path) => `chrome-extension://test-extension/${path}`,
     onMessage: { addListener: (fn) => runtimeListeners.push(fn) },
     onInstalled: { addListener: () => {} },
     onStartup: { addListener: () => {} },
@@ -69,6 +81,10 @@ globalThis.chrome = {
 
 globalThis.fetch = async (url, init) => {
   fetchCalls.push({ url, init, body: JSON.parse(init.body) });
+  if (holdNextFetch) {
+    holdNextFetch = false;
+    await new Promise((resolve) => { releaseHeldFetch = resolve; });
+  }
   modelCalls += 1;
   const content =
     modelCalls === 1
@@ -88,9 +104,12 @@ await delay(80);
 
 const listener = runtimeListeners[0];
 
-function send(type, payload = {}) {
+function send(type, payload = {}, sender = {
+  id: 'test-extension',
+  url: 'chrome-extension://test-extension/src/popup/popup.html',
+}) {
   return new Promise((resolve) => {
-    listener({ type, ...payload }, {}, resolve);
+    listener({ type, ...payload }, sender, resolve);
     setTimeout(() => resolve(undefined), 4000);
   });
 }
@@ -144,6 +163,17 @@ test('activates a provider', async () => {
   const response = await send('providers:activate', { id: custom.id });
   assert.equal(response.ok, true);
   assert.equal(response.data.activeId, custom.id);
+});
+
+test('blocks API calls until the provider host permission exists', async () => {
+  const before = fetchCalls.length;
+  hasHostPermission = false;
+  const denied = await send('providers:test', { id: custom.id });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.error.code, 'host_permission_required');
+  assert.equal(fetchCalls.length, before, 'no request leaves before permission is granted');
+  assert.ok(permissionChecks.includes('https://llm.example.net/*'));
+  hasHostPermission = true;
 });
 
 test('tests a connection and never echoes the key', async () => {
@@ -207,6 +237,26 @@ test('runs a full task through the page agent and records progress', async () =>
   assert.ok(taskId);
 });
 
+test('a late model response cannot overwrite a stopped task', async () => {
+  await send('providers:activate', { id: custom.id });
+  holdNextFetch = true;
+  const started = await send('task:start', { goal: 'Wait for an answer' });
+  assert.equal(started.ok, true);
+  for (let i = 0; i < 40 && !releaseHeldFetch; i += 1) await delay(25);
+  assert.equal(typeof releaseHeldFetch, 'function', 'the worker reached the pending model request');
+
+  await send('task:stop');
+  await delay(2650); // stop safety settlement if a request/page message ignores cancellation
+  let state = (await send('task:state')).data;
+  assert.equal(state.status, 'stopped');
+
+  releaseHeldFetch();
+  releaseHeldFetch = null;
+  await delay(80);
+  state = (await send('task:state')).data;
+  assert.equal(state.status, 'stopped', 'a late completion cannot change the settled state');
+});
+
 test('rejects empty goals and providers without a key', async () => {
   let response = await send('task:start', { goal: '   ' });
   assert.equal(response.ok, false);
@@ -252,6 +302,17 @@ test('app:info reports the current tab and settings', async () => {
   assert.equal(response.data.tab.supported, true);
   assert.equal(response.data.version, '1.0.0');
   assert.equal(JSON.stringify(response.data).includes('sk-custom-secret-9876'), false);
+});
+
+test('content-script senders cannot read provider records or API keys', () => {
+  let replied = false;
+  const accepted = listener(
+    { type: 'providers:list' },
+    { id: 'test-extension', url: tab.url, tab: { id: tab.id } },
+    () => { replied = true; },
+  );
+  assert.equal(accepted, false);
+  assert.equal(replied, false);
 });
 
 test('ignores unknown message types', () => {

@@ -32,6 +32,22 @@ test('sends a conservative OpenAI-compatible request', async () => {
   assert.equal('max_tokens' in call.body, false);
 });
 
+test('the configured API key is redacted from every model message', async () => {
+  const fetchImpl = createFetchMock(() => jsonResponse({
+    body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] },
+  }));
+  await chatCompletion(makeProvider(), [{ role: 'user', content: 'Do not expose sk-secret-key-123456 in this prompt' }], { fetchImpl });
+  assert.equal(JSON.stringify(fetchImpl.calls[0].body.messages).includes('sk-secret-key-123456'), false);
+});
+
+test('redacts the configured key from nested message content too', async () => {
+  const fetchImpl = createFetchMock(() => jsonResponse({
+    body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] },
+  }));
+  await chatCompletion(makeProvider(), [{ role: 'user', content: [{ type: 'text', text: 'sk-secret-key-123456' }] }], { fetchImpl });
+  assert.equal(JSON.stringify(fetchImpl.calls[0].body.messages).includes('sk-secret-key-123456'), false);
+});
+
 test('request body includes optional settings only when configured', () => {
   const provider = makeProvider({ temperature: 0.2, maxTokens: 300, params: { top_p: 0.9 } });
   const body = buildRequestBody(provider, messages, { jsonMode: true });
@@ -360,4 +376,26 @@ test('optional model discovery works and tolerates other shapes', async () => {
   assert.deepEqual(result.models, ['alpha', 'zeta']);
   assert.equal(fetchImpl.calls[0].url, 'https://api.example.com/v1/models');
   assert.equal(fetchImpl.calls[0].init.method, 'GET');
+  assert.equal(fetchImpl.calls[0].init.redirect, 'error');
+  assert.equal(fetchImpl.calls[0].init.credentials, 'omit');
+});
+
+test('model discovery refuses cross-host redirects and missing-key requests', async () => {
+  const redirectFetch = createFetchMock(() => jsonResponse({
+    status: 302,
+    body: { error: 'redirect' },
+    url: 'https://attacker.example/v1/models',
+  }));
+  await assert.rejects(
+    () => listModels(makeProvider(), { fetchImpl: redirectFetch }),
+    (error) => error.code === 'unexpected_redirect',
+  );
+  assert.equal(redirectFetch.calls[0].init.redirect, 'error');
+
+  const noKeyFetch = createFetchMock(() => jsonResponse({ body: { data: [] } }));
+  await assert.rejects(
+    () => listModels(makeProvider({ apiKey: '' }), { fetchImpl: noKeyFetch }),
+    (error) => error.code === 'invalid_config',
+  );
+  assert.equal(noKeyFetch.calls.length, 0);
 });

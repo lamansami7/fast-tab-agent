@@ -1,366 +1,136 @@
 # Fast Tab Agent
 
-An AI browser agent for Chrome, plus a **universal provider system**: bring any
-OpenAI-compatible endpoint, any model, any number of configurations.
+Fast Tab Agent is a Manifest V3 Chrome extension that lets you ask an AI model to work with the currently active web page. It reads a bounded page snapshot, asks an OpenAI-compatible endpoint for one action at a time, validates that action, executes it in the tab, and replans from the result.
 
-Describe a task in plain language. The agent reads the current tab, plans, and
-executes one action at a time — clicking, typing, scrolling, navigating,
-extracting — until the goal is done.
+AI requests and provider credentials are handled by the extension service worker. The page agent does not receive provider records or API keys.
 
-All AI traffic runs inside the extension's background service worker. API keys
-never reach a web page, a prompt, or a log.
+## What it does
 
----
+- Reads visible page text, headings, links and interactive controls; can click, type, select, press an allowlisted key, scroll, navigate, go back, wait, and extract text.
+- Uses a bounded plan → act → observe loop with a configurable maximum of 1–20 steps, cancellation, failure handling, and a popup timeline.
+- Supports provider configurations for NVIDIA NIM, Groq, OpenAI, OpenRouter, Together AI, DeepSeek, Cerebras, Mistral, Ollama, and any compatible custom endpoint. Presets are editable templates, not provider-specific clients.
+- Supports arbitrary model IDs, custom endpoint paths, auth header and scheme, extra headers, request parameters, optional JSON mode, optional model discovery, temperature, and token limits.
+- Stores providers independently so switching or editing one does not overwrite another.
 
-## Highlights
-
-**Agent**
-
-- Snapshot → plan → act → observe → replan loop, with automatic repair of
-  malformed model output.
-- Ten whitelisted actions (`click`, `type`, `select`, `key`, `scroll`,
-  `navigate`, `back`, `wait`, `extract`, `done`); every element id is validated
-  against the live page before anything is clicked.
-- In-page status pill with a Stop button, plus a step timeline in the popup that
-  survives closing and reopening the popup.
-- Step budget, cancellation, and two-strike failure handling so it can't loop
-  forever.
-
-**Providers**
-
-- Nine presets (NVIDIA NIM, Groq, OpenAI, OpenRouter, Together AI, DeepSeek,
-  Cerebras, Mistral, Ollama) that are just **templates** — every field is
-  editable.
-- Fully custom providers: any base URL, any model id, optional endpoint path,
-  custom auth header/scheme, extra headers and arbitrary request parameters.
-- Independent storage per provider: switching configurations never overwrites
-  another provider's key or custom model.
-- Autosave with a visible save state, connection testing with real error
-  classes, optional model discovery, and a trust warning whenever a key is
-  about to be sent to a non-preset host.
-- No hardcoded models, no model catalogue requirement, no SDKs, no runtime
-  dependencies.
-
----
+The extension does not execute JavaScript returned by a model and does not expose arbitrary selectors to the model. It is not a general-purpose computer-use system: interactions are DOM actions and can fail on sites that require trusted physical input, closed shadow roots, inaccessible frames, or complex application-specific behavior.
 
 ## Install
 
-1. Clone this repository.
-2. Open `chrome://extensions`.
-3. Enable **Developer mode**.
-4. Choose **Load unpacked** and select the repository root (the folder
-   containing `manifest.json`).
-5. Pin **Fast Tab Agent** and open it from the toolbar.
+1. Clone or download this repository.
+2. Open `chrome://extensions` and enable **Developer mode**.
+3. Select **Load unpacked** and choose the directory containing `manifest.json`.
+4. Open Fast Tab Agent from the Chrome toolbar.
 
-Requires Chrome 116+ (Manifest V3).
+Chrome 116 or newer is required. There is no build step and the extension has no production dependencies.
 
-## Quick start
+## Configure a provider
 
-1. Open the popup and click the provider chip in the header. A starter
-   NVIDIA NIM configuration is waiting — or add your own provider.
-2. Paste an API key (or point at a local Ollama server, which needs none), then
-   press **Test connection**, then **Use this provider**.
-3. Open any normal `http(s)` website, describe the task, and press **Run agent**.
-4. A small pill in the page shows progress and offers **Stop**. Open the popup
-   again to see the step-by-step timeline and the final answer.
+1. Open the provider picker, then add a preset or choose **Custom provider**.
+2. Set the base URL and model ID. Add an API key for remote providers; a local Ollama endpoint can be used without one.
+3. Optionally adjust auth, headers, parameters, or the endpoint path in **Advanced**.
+4. Use **Test connection**. Chrome asks for host access when the endpoint is first used. Then activate the provider.
 
-Keyboard shortcuts: `⌘/Ctrl + Enter` runs the agent; `Esc` closes panels.
+A preset suggests a starting URL/model only. You can use any model ID your endpoint accepts; **Fetch models** is optional and calls `GET /models` when supported.
 
----
+For a custom OpenAI-compatible endpoint, configure the following as needed:
 
-## Provider system
-
-### Presets
-
-| Provider     | Base URL                                   | Suggested model                 |
-| ------------ | ------------------------------------------ | ------------------------------- |
-| NVIDIA NIM   | `https://integrate.api.nvidia.com/v1`      | `meta/llama-3.3-70b-instruct`   |
-| Groq         | `https://api.groq.com/openai/v1`           | `llama-3.3-70b-versatile`       |
-| OpenAI       | `https://api.openai.com/v1`                | `gpt-4o-mini`                   |
-| OpenRouter   | `https://openrouter.ai/api/v1`             | user configurable               |
-| Together AI  | `https://api.together.xyz/v1`              | user configurable               |
-| DeepSeek     | `https://api.deepseek.com/v1`              | user configurable               |
-| Cerebras     | `https://api.cerebras.ai/v1`               | user configurable               |
-| Mistral      | `https://api.mistral.ai/v1`                | user configurable               |
-| Ollama       | `http://localhost:11434/v1`                | user configurable               |
-
-A preset only pre-fills a name, base URL and (sometimes) a model. The model is
-always editable, and presets whose catalogues change often intentionally start
-with an empty model so nothing goes stale.
-
-### Adding, editing, switching
-
-The header chip opens the provider panel. Each row is a saved configuration:
-
-- **Active** — the provider used for the next task. Click **Use** on another row
-  to switch; switching never mutates any provider record.
-- Click a row to edit it. Fields autosave (650 ms debounce, plus on blur) and the
-  footer shows `Saving…` → `Saved · 14:32`.
-- **Add provider** offers the nine presets plus **Custom provider**.
-- **Delete** asks for confirmation and removes only that provider's storage key.
-- Duplicate names, duplicate presets and multiple keys for the same provider are
-  all fine — every record has its own generated id.
-
-### Custom providers
-
-Any endpoint that implements `POST {baseUrl}/chat/completions` works. Configure:
-
-| Field             | Notes                                                              |
-| ----------------- | ------------------------------------------------------------------ |
-| Provider name     | Free text                                                          |
-| Base URL          | `https://…` (or `http://localhost…`); validated on save and on use |
-| Model             | Free text — any id the endpoint accepts, including ones released later |
-| API key           | Optional for local endpoints                                       |
-| Endpoint path     | Optional override, e.g. `/v2/chat/completions`                     |
-| Auth header       | `Authorization` by default; set `api-key` for Azure-style gateways |
-| Scheme            | `Bearer` by default; leave empty to send the raw key               |
-| Extra headers     | JSON object, e.g. `{"HTTP-Referer":"https://example.com"}`          |
-| Custom parameters | JSON object merged into the request body (`top_p`, `seed`, …)       |
-| Temperature       | Optional, omitted unless you set it                                |
-| Max tokens        | Optional, omitted unless you set it                                |
-| JSON mode         | Optional `response_format: json_object`                            |
-
-The editor always shows the exact resolved endpoint (`POST https://host/v1/chat/completions`)
-so there is no ambiguity about where a request will go.
-
-### Model support
-
-Models are plain strings. There is no fixed list, no required catalogue, and no
-automatic replacement when settings change — a model you type is preserved
-verbatim. **Fetch models** is an optional convenience that calls `GET /models`;
-if an endpoint doesn't support it, the button reports that and you simply type
-the id.
-
-### Storage
-
-`chrome.storage.local`, one key per provider plus a small index:
-
-```jsonc
-// fta.providers.index
-{ "v": 1, "ids": ["p_3f9c…", "p_8ba1…"], "activeId": "p_3f9c…", "updatedAt": 1730000000000 }
-
-// fta.provider.p_3f9c…
-{
-  "id": "p_3f9c…",
-  "name": "Groq",
-  "type": "preset",              // "preset" | "custom"
-  "presetId": "groq",
-  "baseUrl": "https://api.groq.com/openai/v1",
-  "apiKey": "gsk_…",
-  "model": "llama-3.3-70b-versatile",
-  "endpointPath": "",
-  "authHeader": "Authorization",
-  "authScheme": "Bearer",
-  "extraHeaders": {},
-  "params": {},
-  "useJsonMode": false,
-  "temperature": null,
-  "maxTokens": null,
-  "createdAt": 1730000000000,
-  "updatedAt": 1730000000000
-}
-
-// fta.settings — agent preferences (max steps, HUD, JSON mode, private HTTP)
-```
-
-Because each record is its own key:
-
-- saving provider A never rewrites provider B;
-- a corrupted record is skipped and the index repaired, leaving the rest intact;
-- deleting every provider is remembered (no surprise re-seeding);
-- legacy layouts (`providers: [...]`, `activeProviderId`, or flat
-  `apiKey`/`model`/`baseUrl` keys) are imported once and cleaned up.
-
----
-
-## Security model
-
-**Keys stay in the extension.**
-
-- API keys live in `chrome.storage.local` and are read only by the background
-  worker, which performs every AI request.
-- The popup shows the key only inside the password field you are editing.
-- The content script never receives provider data: it sees goals, action objects
-  and page content only.
-- Keys are never placed in model prompts, never written to the DOM of a page,
-  never logged, and never returned in status messages — error strings pass
-  through a redactor that also catches `Bearer …` and `sk-…` patterns.
-
-**Endpoints are validated before every request.**
-
-| Rule | Behaviour |
+| Field | Behaviour |
 | --- | --- |
-| Allowed schemes | `http:`, `https:` only — `file:`, `javascript:`, `chrome:`, `data:`, `ftp:` are rejected |
-| Embedded credentials | rejected (`https://user:pass@host` must be rewritten) |
-| Remote transport | HTTPS required; plain HTTP is refused |
-| Local development | `http://` allowed for `localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]` |
-| Private LAN | `http://` to RFC1918/CGNAT/`.local` only after opting in under *Agent preferences* |
-| Link-local | `169.254.0.0/16`, `fe80::/10` and cloud metadata hosts are always refused |
-| Query/fragment | rejected on the base URL so the destination can't be re-routed |
-| Redirects | automatic following is disabled — a redirect fails the call instead of forwarding the key; cross-host responses are rejected as well |
-| Custom hosts | the editor warns that the key will be sent there, and shows the exact host |
+| Base URL and endpoint path | Standard chat-completions URL construction or an explicit path override |
+| Model | Free-form model ID; never replaced automatically |
+| API key, auth header and scheme | Optional key for local endpoints; default is `Authorization: Bearer …` |
+| Extra headers and request parameters | JSON objects merged into the outgoing request; reserved protocol fields (`messages`, `model`, `stream`) cannot be overridden |
+| Temperature, max tokens and JSON mode | Optional settings; transport can remove rejected optional parameters and retry |
 
-**Connection testing** performs a minimal chat completion through the same
-validated path. It never touches the page and never reports success unless the
-API returned a usable reply.
+Custom headers and parameters are sent to the endpoint you configure. Treat custom endpoints as trusted destinations: prompts and relevant page content will be sent there for inference. The editor shows a warning for non-preset hosts and displays the resolved endpoint.
 
-**Storage access level.** The worker calls
-`chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })`, so
-content scripts running alongside a page cannot read provider records even if
-they were compromised; only the popup and the worker can.
+### Current presets
 
-**Permissions requested:** `storage` (provider config and task state),
-`scripting` + `activeTab` (inject the page agent on demand) and `<all_urls>`
-(needed to reach arbitrary user-configured API hosts and to read the active
-tab). No telemetry, analytics, or third-party services are involved; requests go
-only to the endpoint you configured.
+| Provider | Base URL | Suggested model |
+| --- | --- | --- |
+| NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | `meta/llama-3.3-70b-instruct` |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| OpenRouter | `https://openrouter.ai/api/v1` | User-configured |
+| Together AI | `https://api.together.xyz/v1` | User-configured |
+| DeepSeek | `https://api.deepseek.com/v1` | User-configured |
+| Cerebras | `https://api.cerebras.ai/v1` | User-configured |
+| Mistral | `https://api.mistral.ai/v1` | User-configured |
+| Ollama | `http://localhost:11434/v1` | User-configured |
 
----
+All presets use the same OpenAI-compatible chat-completions transport. Provider-specific features beyond that interface are not guaranteed.
+
+## Permissions
+
+The required manifest permissions are `storage`, `scripting`, and `activeTab`:
+
+- `activeTab` gives temporary access to the tab when the user opens the extension; `scripting` injects the page agent on demand. The extension does not request persistent access to every website.
+- `storage` stores provider settings, preferences, and a session task snapshot.
+- `optional_host_permissions` declares HTTP and HTTPS hosts as requestable, but no host-wide permission is granted at installation. When you explicitly test a provider, fetch models, or start a task, the popup requests access to that provider's exact scheme and hostname. The service worker checks the grant again before making the request. Access can be forgotten from the provider editor or removed in Chrome settings.
+
+Chrome host permissions are host-based and do not reliably isolate a port; a grant for a host can cover other ports on that host. Local model servers, including Ollama, use the same explicit permission flow. If access is denied, no API request is made.
+
+## Security and privacy
+
+- Provider keys are stored in `chrome.storage.local`, which is not encrypted by the extension. The background worker sets storage access to `TRUSTED_CONTEXTS` before reading provider records or injecting the page agent. Anyone with access to the local Chrome profile may still be able to access extension data.
+- Keys are used by the background worker in authentication headers. The request transport redacts the configured key from prompt messages and error strings; keys are not intentionally sent in model prompts, logs, page messages, or task progress. A user can still intentionally include unrelated secrets in a task or page content.
+- The agent excludes password fields from snapshots and withholds values for fields that look sensitive based on their type, autocomplete, name, label, or placeholder. This is heuristic: it cannot identify every sensitive value embedded in ordinary page text.
+- Page text and model output are untrusted. The system prompt explicitly rejects webpage instructions that conflict with the user's goal, and model actions are constrained to a fixed schema and checked against current page elements. These measures reduce risk; prompt injection cannot be eliminated by prompts or schema validation alone.
+- Actions that look consequential (for example, purchase, delete, send, publish, transfer, or booking actions) use a browser confirmation dialog based on the control/form text. This detection is heuristic and can miss or misclassify an action. Review the tab and confirmation prompt before approving. The agent must not be left unattended on sensitive sites.
+- AI action events are DOM events, not guaranteed trusted physical input. Pages can respond differently, and the extension cannot guarantee that a site performed or did not perform a side effect.
+- HTTPS is required for remote hosts. HTTP is accepted for loopback development endpoints and, only after enabling the preference, selected private-LAN addresses. Link-local and known metadata endpoints are rejected. These URL checks do not prevent DNS rebinding or every network-routing attack.
+- API redirects are not followed. Model discovery uses the same redirect restriction as chat requests. Requests omit cookies and referrers.
+- No telemetry or analytics are included. Provider requests go to the configured endpoint; the provider's own data handling policy applies.
+
+Fast Tab Agent is not a security boundary for a website and is not certified for financial, medical, account-security, or other high-impact automation.
+
+## Supported actions
+
+`click`, `type`, `select`, allowlisted `key`, `scroll`, `navigate` (HTTP/HTTPS only), `back`, `wait`, `extract`, and `done`.
+
+At execution time the page agent rechecks that targets still exist, are visible, and are not disabled; typing is limited to supported text fields and password fields are unavailable. Select operations require a real `<select>`. The model receives bounded snapshots and action history, not arbitrary page scripts or DOM selectors. A task stops at its step limit, on explicit cancellation, or after repeated action failures. Consequential-action confirmations are a heuristic extra check, not a guarantee that every risky operation will be caught.
 
 ## Architecture
 
-```
-┌──────────────────────────── src/popup ────────────────────────────┐
-│ popup.html / popup.css / popup.js                                 │
-│ - provider list, editor, autosave, test UI, task timeline         │
-│ - no network calls: everything goes through runtime messages       │
-└───────────────────────────────┬───────────────────────────────────┘
-                                │ chrome.runtime.sendMessage
-┌───────────────────────────────▼───────────────────────────────────┐
-│ src/background.js (service worker)                                │
-│ - provider store (one storage key per provider)                   │
-│ - endpoint validation, request building, error mapping            │
-│ - the ONLY place fetch() talks to a provider                      │
-│ - task loop driver + progress broadcasts                          │
-└───────┬───────────────────────────────────────────────┬───────────┘
-        │ src/lib/api.js (fetch)                        │ chrome.tabs.sendMessage
-        ▼                                               ▼
-  OpenAI-compatible API                       src/content/agent.js
-  POST {baseUrl}/chat/completions             - snapshot of the page
-                                              - executes one action
-                                              - in-page status pill
+```text
+src/popup/            Provider editor, preferences, run controls and timeline
+src/background.js     Provider storage, permission checks, API transport and task orchestration
+src/lib/api.js        OpenAI-compatible transport, errors, retries and model discovery
+src/lib/providers.js  Provider normalization, validation and headers
+src/lib/urls.js       Endpoint validation and URL construction
+src/lib/prompt.js     System/user prompts, JSON parsing and action validation
+src/lib/agent-runner.js  Plan → act → observe loop
+src/content/agent.js  Page snapshot, validated DOM actions and status HUD
 ```
 
-**Library modules** (all dependency-free, all unit tested):
-
-| Module | Responsibility |
-| --- | --- |
-| `src/lib/constants.js` | storage keys, limits, default settings |
-| `src/lib/presets.js` | preset templates and host recognition |
-| `src/lib/urls.js` | endpoint validation, `/chat/completions` construction |
-| `src/lib/providers.js` | provider schema, normalisation, validation, headers, masking |
-| `src/lib/provider-store.js` | per-provider storage, index, migration, seeding |
-| `src/lib/errors.js` | error vocabulary, classification, redaction |
-| `src/lib/api.js` | chat completions, retries, adaptive compatibility, testing, `/models` |
-| `src/lib/prompt.js` | agent prompts, JSON extraction, action validation |
-| `src/lib/agent-runner.js` | the plan → act → observe loop |
-
-### Message protocol
-
-| Message | Purpose |
-| --- | --- |
-| `providers:list` | all configurations + active id |
-| `providers:save` | upsert one configuration (validates hard URL errors) |
-| `providers:delete` / `providers:activate` | remove / switch |
-| `providers:test` | validate + minimal chat request; accepts an unsaved draft |
-| `providers:models` | optional `GET /models` discovery |
-| `settings:get` / `settings:save` | agent preferences |
-| `task:start` / `task:stop` / `task:state` | run control and task snapshot |
-| `app:info` | version, settings, current tab, in-memory task |
-| `fta:progress` (worker → popup) | live task updates |
-| `fta:ping` / `fta:snapshot` / `fta:execute` / `fta:hud` | worker ↔ page agent |
-
-All responses use `{ ok: true, data }` or `{ ok: false, error: { code, message, hint, field } }`.
-
-### Provider compatibility
-
-Providers differ in ways that break naive clients. The transport handles:
-
-- **Error shapes** — OpenAI `{error:{...}}`, FastAPI `{detail}`, Mistral
-  `{message}`, Ollama `{error:"…"}`, HTML proxy pages, and 200-with-error bodies.
-- **Status classes** — 401/403 auth, 402/429 quota vs rate limit, 404 endpoint
-  vs model, 400/422 invalid request, 413 payload, 5xx server, timeouts,
-  non-JSON replies, empty completions, content filters.
-- **Optional parameters** — if a model refuses `temperature`, `max_tokens`,
-  `response_format`, `top_p` and friends, that field is dropped and the call is
-  retried once; the popup notes what was skipped.
-- **Retries** — one extra attempt for 429/5xx, honouring `Retry-After`.
-- **Response shapes** — string content, multimodal content arrays, and legacy
-  `choices[0].text`.
-- **Conservative defaults** — no temperature, no token cap, no JSON mode unless
-  configured.
-
----
-
-## Development
-
-The extension itself has **no runtime dependencies** and no build step — the
-files in this repository are exactly what Chrome loads.
-
-```bash
-npm install          # dev-only: jsdom for the DOM tests
-npm test             # 100+ unit + worker integration tests (node:test)
-npm run test:dom     # popup + page-agent tests in jsdom
-npm run test:all     # everything
-npm run icons        # regenerate icons/ from tools/make-icons.mjs
-npm run preview      # http://localhost:4173 — the real popup with mocked data
-```
-
-`npm run preview` serves the unmodified popup with a mock `chrome.*` runtime,
-so the provider UI and a scripted agent run can be reviewed in any browser
-without loading the extension. Nothing in `tools/` ships with the extension.
-
-Test coverage includes URL/endpoint validation, provider normalisation and
-storage (independence, migration, corruption, concurrency), request building,
-error classification and redaction, adaptive parameter fallback, prompt/JSON
-parsing, action validation, the agent loop (repair, cancellation, failures,
-step limits), the worker's message API end-to-end, and the popup's real DOM
-flow.
-
-### Layout
-
-```
-manifest.json
-icons/                     generated PNGs
-src/
-  background.js            service worker
-  content/agent.js         page agent (classic script)
-  popup/                   popup.html, popup.css, popup.js
-  lib/                     shared, testable modules
-tests/                     node:test suites (+ tests/dom for jsdom)
-tools/make-icons.mjs       icon generator (no dependencies)
-tools/preview/             dev-only UI preview server + mock chrome API
-```
-
----
+The service worker owns task execution and stores progress in `chrome.storage.session`. Chrome can suspend or restart MV3 workers; tasks are **not resumed** after interruption. A stale running task is marked interrupted/stopped when the popup or a new task next queries state. The popup can close and reopen while the worker remains active, but this is not a guarantee of uninterrupted execution.
 
 ## Troubleshooting
 
-| What you see | What to check |
+| Symptom | Check |
 | --- | --- |
-| **Authentication failed** | Key typo, revoked key, or the key lacks access to the model |
-| **Model unavailable** | Exact model id from the provider dashboard (case and slashes matter) |
-| **Unsupported endpoint (404)** | Base URL path — most end with `/v1`; try the endpoint path override |
-| **Connection failed** | Host reachable, TLS valid, local server running; private LAN HTTP needs the opt-in |
-| **Rate limited / quota** | Provider-side limit or billing; wait or use another key/model |
-| **Model did not return usable JSON** | Small or chat-tuned models sometimes ignore the schema; try a stronger model |
-| **Agent cannot read this page** | `chrome://` pages, the Web Store and PDF viewers are off-limits to extensions |
+| Chrome denies endpoint access | Retry from the popup and approve the requested host. The extension asks only at use time; grants can be forgotten or removed in Chrome settings. |
+| Authentication or model error | Verify the key, exact model ID, provider access, and billing status. |
+| Endpoint 404 | Check the base URL and optional endpoint-path override. Most compatible endpoints use `/v1/chat/completions`. |
+| Ollama cannot connect | Confirm the model is pulled and Ollama is listening on `localhost:11434`. Ollama may need a browser origin policy that permits the extension. |
+| Private-network HTTP is refused | Only loopback is allowed by default. The optional private-LAN HTTP preference is insecure and should be used only on a trusted network. |
+| Agent cannot read the page | Chrome internal pages, the Chrome Web Store, some PDF viewers, and pages without extension access are unavailable. |
+| Click or typing did not work | The page may use a closed shadow root, cross-origin frame, custom control, or trusted-event checks. Inspect the page and complete the step manually. |
+| Task stops unexpectedly | Check the popup for an interrupted task; MV3 worker suspension can stop a run. Start it again rather than assuming it resumed. |
 
-**Ollama notes.** The preset points at `http://localhost:11434/v1`. If Ollama
-rejects the browser's origin, start it with `OLLAMA_ORIGINS=*` (or your
-extension's origin) and confirm the model is pulled (`ollama list`).
+## Development and tests
 
-**Where things run.** A task keeps running when the popup closes — the worker
-owns the loop and the page pill shows progress. Chrome may still suspend an
-extension worker during very long idle periods; if that happens the run is
-marked as interrupted rather than silently hanging, and you can start again.
+```bash
+npm install
+npm test             # unit tests and background-worker message integration
+npm run test:dom     # jsdom page-agent and popup tests
+npm run test:all     # both suites
+npm run preview      # local popup preview with mocked Chrome APIs
+npm run icons        # regenerate icon assets
+```
 
-**Key storage.** Keys are stored unencrypted in Chrome's extension storage,
-protected by your OS profile. Anyone with access to your Chrome profile and
-`chrome.storage.local` can read them — use scoped/rotatable keys.
-
----
+`jsdom` is a development dependency for DOM tests only. The preview is a UI mock and is not a Chrome extension runtime test. Tests exercise endpoint validation, storage, request/error handling, prompt parsing, action safety, cancellation, worker messaging, popup behavior, and DOM actions. Automated tests do not replace testing the unpacked extension in Chrome against real providers and real websites.
 
 ## License
 
-MIT © Sami Laman — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
