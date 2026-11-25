@@ -15,9 +15,9 @@ export const PRESETS = [
     id: 'nvidia',
     name: 'NVIDIA NIM',
     baseUrl: 'https://integrate.api.nvidia.com/v1',
-    suggestedModel: 'meta/llama-3.3-70b-instruct',
-    modelHint: 'meta/llama-3.3-70b-instruct',
-    tagline: 'Llama, Nemotron and more on NVIDIA-hosted NIM',
+    suggestedModel: 'nvidia/nemotron-3.5-lightning-30b-a3b',
+    modelHint: 'nvidia/nemotron-3.5-lightning-30b-a3b',
+    tagline: 'Nemotron, Mistral and more on NVIDIA-hosted NIM',
     accent: '#76b900',
   },
   {
