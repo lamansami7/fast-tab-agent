@@ -58,7 +58,7 @@ Custom headers and parameters are sent to the endpoint you configure. Treat cust
 | Mistral | `https://api.mistral.ai/v1` | User-configured |
 | Ollama | `http://localhost:11434/v1` | User-configured |
 
-All presets use the same OpenAI-compatible chat-completions transport. Provider-specific features beyond that interface are not guaranteed.
+All presets use the same OpenAI-compatible chat-completions transport. The transport accepts common compatible response shapes (standard message content, content-part arrays, legacy text, and compatible `output_text` responses) and reports redacted response-shape diagnostics when a 200 response contains no usable message text. Provider-specific features beyond that interface are not guaranteed.
 
 ## Permissions
 
@@ -112,6 +112,7 @@ The service worker owns task execution and stores progress in `chrome.storage.se
 | Chrome denies endpoint access | Retry from the popup and approve the requested host. The extension asks only at use time; grants can be forgotten or removed in Chrome settings. |
 | Authentication or model error | Verify the key, exact model ID, provider access, and billing status. |
 | Endpoint 404 | Check the base URL and optional endpoint-path override. Most compatible endpoints use `/v1/chat/completions`. |
+| Empty or unexpected response | The endpoint returned HTTP 200 but no usable message text. Check the redacted response-shape diagnostics in the test result, confirm the model ID and endpoint, and increase max tokens if the model exhausted its output budget before producing message content. |
 | Ollama cannot connect | Confirm the model is pulled and Ollama is listening on `localhost:11434`. Ollama may need a browser origin policy that permits the extension. |
 | Private-network HTTP is refused | Only loopback is allowed by default. The optional private-LAN HTTP preference is insecure and should be used only on a trusted network. |
 | Agent cannot read the page | Chrome internal pages, the Chrome Web Store, some PDF viewers, and pages without extension access are unavailable. |

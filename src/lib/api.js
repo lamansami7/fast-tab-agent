@@ -123,27 +123,140 @@ export function buildRequestBody(provider, messages, options = {}) {
   return mergeCustomParams(body, provider.params);
 }
 
-function extractContent(payload) {
-  const choice = payload?.choices?.[0];
-  if (!choice) return { content: '', finishReason: null };
-  let content = choice.message?.content;
+const REASONING_PART_TYPES = new Set(['reasoning', 'thinking', 'thought', 'internal_reasoning', 'reasoning_text']);
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function extractTextFromContentPart(part, depth = 0) {
+  if (depth > 5) return '';
+  if (typeof part === 'string') return part;
+  if (!isPlainObject(part)) return '';
+  const type = typeof part.type === 'string' ? part.type.toLowerCase() : '';
+  if (REASONING_PART_TYPES.has(type)) return '';
+  if (typeof part.text === 'string') return part.text;
+  if (isPlainObject(part.text)) {
+    if (typeof part.text.value === 'string') return part.text.value;
+    if (typeof part.text.text === 'string') return part.text.text;
+  }
+  if (typeof part.content === 'string') return part.content;
+  if (typeof part.output_text === 'string') return part.output_text;
+  if (typeof part.value === 'string' && (!type || type === 'text' || type === 'output_text')) {
+    return part.value;
+  }
+  return '';
+}
+
+function extractTextFromContent(content, depth = 0) {
+  if (depth > 5) return '';
+  if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    content = content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part.text === 'string') return part.text;
-        return '';
+    return content.map((part) => extractTextFromContentPart(part, depth + 1)).join('');
+  }
+  if (isPlainObject(content)) {
+    return extractTextFromContentPart(content, depth + 1);
+  }
+  return '';
+}
+
+function extractTopLevelText(payload) {
+  if (typeof payload?.output_text === 'string') return payload.output_text;
+  // Conservative Responses-API-like shape: output[].content[].text/output_text
+  if (Array.isArray(payload?.output)) {
+    const text = payload.output
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (!isPlainObject(item)) return '';
+        if (typeof item.output_text === 'string') return item.output_text;
+        if (typeof item.text === 'string') return item.text;
+        return extractTextFromContent(item.content, 1);
       })
       .join('');
+    if (text) return text;
   }
-  if (typeof content !== 'string') {
-    content = typeof choice.text === 'string' ? choice.text : '';
+  return '';
+}
+
+function describeResponseShape(payload) {
+  try {
+    if (!isPlainObject(payload)) {
+      return `top-level=${Array.isArray(payload) ? 'array' : typeof payload}`;
+    }
+    const keys = Object.keys(payload).slice(0, 12);
+    const parts = [`keys=[${keys.join(', ')}]`];
+    const choices = Array.isArray(payload.choices) ? payload.choices : null;
+    if (choices) {
+      parts.push(`choices=${choices.length}`);
+      const choice = choices[0];
+      if (isPlainObject(choice)) {
+        const choiceKeys = Object.keys(choice).slice(0, 10);
+        parts.push(`choice0.keys=[${choiceKeys.join(', ')}]`);
+        if (choice.finish_reason !== undefined) parts.push(`finish_reason=${String(choice.finish_reason)}`);
+        const msg = choice.message;
+        if (isPlainObject(msg)) {
+          const msgKeys = Object.keys(msg).slice(0, 12);
+          parts.push(`message.keys=[${msgKeys.join(', ')}]`);
+          const content = msg.content;
+          if (content === null) parts.push('content=null');
+          else if (typeof content === 'string') parts.push(`content=string(len=${content.length})`);
+          else if (Array.isArray(content)) parts.push(`content=array(len=${content.length})`);
+          else if (isPlainObject(content)) parts.push(`content=object(keys=[${Object.keys(content).slice(0, 8).join(', ')}])`);
+          else parts.push(`content=${typeof content}`);
+          for (const field of ['reasoning_content', 'reasoning', 'thinking', 'thought']) {
+            if (field in msg) parts.push(`${field}=present`);
+          }
+          if (typeof msg.refusal === 'string' && msg.refusal) parts.push('refusal=present');
+          if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) parts.push(`tool_calls=${msg.tool_calls.length}`);
+        } else if (msg === null) {
+          parts.push('message=null');
+        } else if (typeof choice.text === 'string') {
+          parts.push(`text=string(len=${choice.text.length})`);
+        }
+      }
+    } else if (typeof payload.output_text === 'string') {
+      parts.push(`output_text=string(len=${payload.output_text.length})`);
+    } else if (Array.isArray(payload.output)) {
+      parts.push(`output=array(len=${payload.output.length})`);
+    }
+    return parts.join(' ');
+  } catch {
+    return 'response shape unavailable';
   }
+}
+
+function extractContent(payload) {
+  const choice = payload?.choices?.[0];
+  if (!choice) {
+    const topLevel = extractTopLevelText(payload);
+    return {
+      content: topLevel,
+      finishReason: null,
+      hasReasoningOnly: false,
+    };
+  }
+  let content = extractTextFromContent(choice.message?.content);
+  if (!content && typeof choice.text === 'string') content = choice.text;
+  if (!content) content = extractTopLevelText(payload);
   // Some gateways return refusals separately.
+  let refusal = '';
   if (!content && typeof choice.message?.refusal === 'string') {
-    content = choice.message.refusal;
+    refusal = choice.message.refusal;
+    content = refusal;
   }
-  return { content, finishReason: choice.finish_reason || null };
+  const hasReasoningOnly = Boolean(
+    !content.trim() &&
+      choice?.message &&
+      ['reasoning_content', 'reasoning', 'thinking', 'thought'].some(
+        (field) => typeof choice.message[field] === 'string' && choice.message[field].trim(),
+      ),
+  );
+  return {
+    content,
+    finishReason: choice.finish_reason || null,
+    hasReasoningOnly,
+    hasRefusal: Boolean(refusal),
+  };
 }
 
 function detectParamFromBody(msg) {
@@ -316,18 +429,74 @@ export async function chatCompletion(provider, messages, options = {}) {
       });
     }
 
-    let { content, finishReason } = extractContent(payload);
+    let { content, finishReason, hasReasoningOnly, hasRefusal } = extractContent(payload);
     // A provider or model may echo the configured credential; keep it out of
     // action payloads, status messages, and task history as a final safeguard.
     content = redact(content, provider.apiKey);
     if (!content.trim()) {
-      throw new ProviderError(
-        finishReason === 'content_filter' ? ERROR_CODES.content_filtered : ERROR_CODES.invalid_response,
-        finishReason === 'content_filter'
-          ? 'The provider blocked the response with a content filter.'
-          : 'The provider returned an empty response.',
-        { status: response.status },
-      );
+      // Controlled, bounded fallback: an empty completion with finish_reason=length
+      // can be caused by an overly small token limit, especially on reasoning models.
+      // Drop token-limit params once and retry, but never silently hide the error if
+      // the retry also produces no usable output.
+      if (finishReason === 'length' && attempt < MAX_ATTEMPTS) {
+        const tokenParams = ['max_tokens', 'max_completion_tokens'].filter(
+          (param) => Object.prototype.hasOwnProperty.call(body, param) && !dropped.includes(param),
+        );
+        if (tokenParams.length > 0) {
+          for (const param of tokenParams) {
+            delete body[param];
+            dropped.push(param);
+          }
+          lastError = new ProviderError(
+            ERROR_CODES.invalid_response,
+            'The provider returned an empty response after reaching its token limit.',
+            {
+              status: response.status,
+              providerMessage: redact(describeResponseShape(payload), provider.apiKey),
+            },
+          );
+          continue;
+        }
+      }
+
+      const shape = redact(describeResponseShape(payload), provider.apiKey);
+      if (finishReason === 'content_filter') {
+        throw new ProviderError(
+          ERROR_CODES.content_filtered,
+          'The provider blocked the response with a content filter.',
+          { status: response.status, providerMessage: shape },
+        );
+      }
+      if (hasRefusal) {
+        throw new ProviderError(
+          ERROR_CODES.content_filtered,
+          'The provider refused to return usable content.',
+          { status: response.status, providerMessage: shape },
+        );
+      }
+      if (hasReasoningOnly) {
+        throw new ProviderError(
+          ERROR_CODES.invalid_response,
+          'The provider returned reasoning output but no usable message content.',
+          {
+            status: response.status,
+            providerMessage: shape,
+            hint: 'The model may have used its output budget for internal reasoning. Try a different model, or increase the max tokens limit.',
+          },
+        );
+      }
+      const detail =
+        finishReason === 'length'
+          ? 'The provider returned an empty response after reaching its token limit.'
+          : 'The provider returned an empty response.';
+      throw new ProviderError(ERROR_CODES.invalid_response, detail, {
+        status: response.status,
+        providerMessage: shape,
+        hint:
+          finishReason === 'length'
+            ? 'Increase max tokens, or try a model that returns message content within the configured limit.'
+            : 'The endpoint responded, but no usable message text was found in the response. Check model compatibility and endpoint configuration.',
+      });
     }
 
     return {
@@ -357,9 +526,12 @@ function testStatusForCode(code) {
     case ERROR_CODES.insufficient_quota:
       return TEST_STATUS.insufficientQuota;
     case ERROR_CODES.endpoint_not_found:
-    case ERROR_CODES.invalid_response:
     case ERROR_CODES.unexpected_redirect:
       return TEST_STATUS.unsupportedEndpoint;
+    case ERROR_CODES.invalid_response:
+      return TEST_STATUS.invalidResponse;
+    case ERROR_CODES.content_filtered:
+      return TEST_STATUS.contentFiltered;
     case ERROR_CODES.connection_failed:
       return TEST_STATUS.connectionFailed;
     case ERROR_CODES.timeout:

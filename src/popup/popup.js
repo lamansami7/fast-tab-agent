@@ -804,6 +804,7 @@ const TEST_UI = {
   unsupported_endpoint: { tone: 'error', title: 'Unsupported endpoint' },
   invalid_config: { tone: 'warn', title: 'Check the configuration' },
   invalid_response: { tone: 'error', title: 'Unexpected response' },
+  content_filtered: { tone: 'error', title: 'Response blocked' },
   server_error: { tone: 'error', title: 'Provider server error' },
   http_error: { tone: 'error', title: 'Request failed' },
   cancelled: { tone: 'warn', title: 'Test cancelled' },

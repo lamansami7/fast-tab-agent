@@ -69,6 +69,7 @@ export const TEST_STATUS = {
   unsupportedEndpoint: 'unsupported_endpoint',
   invalidConfig: 'invalid_config',
   invalidResponse: 'invalid_response',
+  contentFiltered: 'content_filtered',
   insufficientQuota: 'insufficient_quota',
   serverError: 'server_error',
   httpError: 'http_error',
