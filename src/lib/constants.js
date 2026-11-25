@@ -54,7 +54,12 @@ export const DEFAULT_SETTINGS = {
   allowPrivateHttp: false,
   /** Show the in-page status pill while a task runs. */
   showHud: true,
+  /** 'auto' follows the operating system; 'light' and 'dark' force a theme. */
+  theme: 'auto',
 };
+
+/** Maximum tabs returned to the tab picker in one response. */
+export const TAB_LIST_LIMIT = 120;
 
 /** Statuses returned by the connection tester. */
 export const TEST_STATUS = {

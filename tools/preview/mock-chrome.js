@@ -2,8 +2,8 @@
  * Mock chrome.* API for the popup UI preview (tools/preview/server.mjs).
  *
  * This file is NOT part of the extension. It lets the real popup run in an
- * ordinary browser tab with canned providers and a scripted task, so the UI can
- * be reviewed without loading the unpacked extension.
+ * ordinary browser tab with canned providers, tabs and a scripted task, so the
+ * interface can be reviewed without loading the unpacked extension.
  */
 (function () {
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -16,7 +16,7 @@
       type: 'preset',
       presetId: 'groq',
       baseUrl: 'https://api.groq.com/openai/v1',
-      apiKey: 'gsk_preview_key_0001',
+      apiKey: 'preview-only-placeholder',
       model: 'llama-3.3-70b-versatile',
       endpointPath: '',
       authHeader: 'Authorization',
@@ -75,111 +75,78 @@
     showHud: true,
     jsonMode: false,
     allowPrivateHttp: false,
+    theme: 'auto',
   };
 
-  let task = null;
-  let timers = [];
-  const listeners = [];
-  let counter = 0;
-
-  const SCRIPT = [
+  const tabs = [
     {
-      thought: 'Scanning the page for a search field and product cards',
-      description: 'extract from page',
-      observation: 'Found a search box, 18 product cards and a cart link.',
-      delay: 900,
+      id: 1,
+      windowId: 1,
+      index: 0,
+      title: 'Running shoes — demo store',
+      url: 'https://demo-store.example/running-shoes',
+      active: true,
+      pinned: false,
+      supported: true,
+      restricted: false,
+      reason: '',
+      permission: 'granted',
+      favIconUrl: '',
     },
     {
-      thought: 'Search for the item the user asked about',
-      description: 'type "running shoes" into #4',
-      observation: 'Typed “running shoes” and pressed Enter.',
-      delay: 1500,
+      id: 2,
+      windowId: 1,
+      index: 1,
+      title: 'Artificial intelligence — Wikipedia',
+      url: 'https://en.wikipedia.org/wiki/Artificial_intelligence',
+      active: false,
+      pinned: false,
+      supported: true,
+      restricted: false,
+      reason: '',
+      permission: 'needed',
+      favIconUrl: '',
     },
     {
-      thought: 'Compare the results that are in view',
-      description: 'scroll down 600px',
-      observation: 'Six results between $59 and $189; three are available in size 10.',
-      delay: 1600,
-    },
-    {
-      thought: 'Open the cheapest matching pair',
-      description: 'click #12',
-      observation: 'Clicked “Add to cart”. A confirmation toast appeared.',
-      delay: 1500,
-    },
-    {
-      thought: 'The cart shows one item, so the goal is met',
-      description: 'finish',
-      observation: 'Added the $59 “Trail Runner 3” (size 10) to the cart.',
-      done: true,
-      delay: 900,
+      id: 3,
+      windowId: 1,
+      index: 2,
+      title: 'Settings',
+      url: 'chrome://settings',
+      active: false,
+      pinned: false,
+      supported: false,
+      restricted: true,
+      reason: 'Chrome internal pages (chrome://) cannot be read or controlled by extensions.',
+      permission: 'unavailable',
+      favIconUrl: '',
     },
   ];
 
-  function emitProgress() {
-    if (!task) return;
-    const snapshot = clone(task);
-    for (const listener of listeners) {
-      try {
-        listener({ type: 'fta:progress', task: snapshot });
-      } catch {
-        /* ignore listener errors */
-      }
-    }
-  }
+  const grantedOrigins = new Set(['https://api.groq.com/*']);
+  let tabsPermission = true;
+  const listeners = [];
+  const storage = {};
+  let counter = 0;
+  let task = null;
+  let timers = [];
 
-  function clearTimers() {
-    for (const id of timers) clearTimeout(id);
-    timers = [];
-  }
-
-  function startTask(goal) {
-    clearTimers();
-    task = {
-      id: `task_${Date.now().toString(36)}`,
-      goal,
-      status: 'running',
-      phase: 'thinking',
-      steps: [],
-      startedAt: Date.now(),
-      finishedAt: null,
-      answer: '',
-      error: null,
-      maxSteps: settings.maxSteps,
-      limitReached: false,
-      provider: { id: activeId, name: currentProvider()?.name || 'Provider', model: currentProvider()?.model || '' },
-      tabId: 1,
-    };
-    emitProgress();
-
-    let elapsed = 0;
-    SCRIPT.forEach((step, index) => {
-      elapsed += step.delay;
-      timers.push(
-        setTimeout(() => {
-          if (!task || task.status !== 'running') return;
-          task.steps.push({
-            step: index + 1,
-            thought: step.thought,
-            description: step.description,
-            ok: true,
-            done: Boolean(step.done),
-            observation: step.observation,
-          });
-          task.phase = step.done ? 'finishing' : 'acting';
-          if (step.done) {
-            task.status = 'done';
-            task.phase = 'done';
-            task.finishedAt = Date.now();
-            task.answer = 'Added the cheapest size 10 pair — “Trail Runner 3” at $59 — to your cart.';
-          }
-          emitProgress();
-        }, elapsed),
-      );
-    });
-
-    return clone(task);
-  }
+  const cloneStorageValue = (value) => (value === undefined ? undefined : clone(value));
+  const localArea = {
+    async get(keys) {
+      if (!keys) return clone(storage);
+      const list = Array.isArray(keys) ? keys : [keys];
+      const out = {};
+      for (const key of list) if (key in storage) out[key] = cloneStorageValue(storage[key]);
+      return out;
+    },
+    async set(items) {
+      Object.assign(storage, clone(items));
+    },
+    async remove(keys) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key];
+    },
+  };
 
   function currentProvider() {
     return providers.find((provider) => provider.id === activeId) || providers[0] || null;
@@ -191,6 +158,141 @@
     } catch {
       return provider.baseUrl;
     }
+  }
+
+  function emitProgress() {
+    if (!task) return;
+    for (const listener of listeners) {
+      try {
+        listener({ type: 'fta:progress', task: clone(task) });
+      } catch {
+        /* ignore listener errors */
+      }
+    }
+  }
+
+  function clearTimers() {
+    for (const id of timers) clearTimeout(id);
+    timers = [];
+  }
+
+  function tabsForPicker() {
+    return tabs.map((tab) => ({
+      ...clone(tab),
+      permission: tab.restricted
+        ? 'unavailable'
+        : tab.active
+          ? 'granted'
+          : tab.url
+            ? grantedOrigins.has(`${new URL(tab.url).protocol}//${new URL(tab.url).hostname}/*`)
+              ? 'granted'
+              : 'needed'
+            : 'unknown',
+    }));
+  }
+
+  function startTask(goal, tabId) {
+    clearTimers();
+    const target = tabs.find((tab) => tab.id === tabId) || tabs[0];
+    task = {
+      id: `task_${Date.now().toString(36)}`,
+      goal,
+      status: 'running',
+      phase: 'starting',
+      steps: [],
+      startedAt: Date.now(),
+      finishedAt: null,
+      answer: '',
+      error: null,
+      maxSteps: settings.maxSteps,
+      limitReached: false,
+      provider: {
+        id: activeId,
+        name: currentProvider()?.name || 'Provider',
+        model: currentProvider()?.model || '',
+      },
+      tabId: target.id,
+      tabTitle: target.title,
+      tabHost: new URL(target.url).hostname,
+      currentStep: 0,
+      currentAction: null,
+      currentActionLabel: '',
+    };
+    emitProgress();
+
+    const script = [
+      { at: 300, phase: 'reading' },
+      { at: 900, phase: 'thinking', currentStep: 1 },
+      { at: 1400, phase: 'acting', action: { type: 'type' } },
+      {
+        at: 2100,
+        step: {
+          step: 1,
+          thought: 'Search for the item the user asked about',
+          description: 'type "running shoes" into #4',
+          ok: true,
+          observation: 'Typed “running shoes” and pressed Enter.',
+        },
+      },
+      { at: 2600, phase: 'thinking', currentStep: 2 },
+      { at: 3000, phase: 'acting', action: { type: 'click' } },
+      {
+        at: 3800,
+        step: {
+          step: 2,
+          thought: 'Compare the results that are in view',
+          description: 'click #12',
+          ok: true,
+          observation: 'Six results between $59 and $189; three are available in size 10.',
+        },
+      },
+      { at: 4300, phase: 'finishing' },
+      {
+        at: 4800,
+        finish: {
+          answer:
+            'The cheapest size 10 pair is the **Trail Runner 3** at $59, available in blue and grey.\n\nThe next closest option is the “Street Pace 2” at $74. Both show free delivery and returns within 30 days.',
+          step: {
+            step: 3,
+            thought: 'The goal is met with a clear answer',
+            description: 'finish',
+            ok: true,
+            done: true,
+            observation: 'Summarised the cheapest matching pair.',
+          },
+        },
+      },
+    ];
+
+    for (const entry of script) {
+      timers.push(
+        setTimeout(() => {
+          if (!task || task.status !== 'running') return;
+          if (entry.phase) task.phase = entry.phase;
+          if (entry.action) {
+            task.phase = 'acting';
+            task.currentAction = entry.action;
+          }
+          if (entry.currentStep) task.currentStep = entry.currentStep;
+          if (entry.step) {
+            task.steps.push(entry.step);
+            task.currentAction = null;
+            task.phase = 'acting';
+          }
+          if (entry.finish) {
+            task.steps.push(entry.finish.step);
+            task.status = 'done';
+            task.phase = 'done';
+            task.finishedAt = Date.now();
+            task.answer = entry.finish.answer;
+            task.currentAction = null;
+          }
+          emitProgress();
+        }, entry.at),
+      );
+    }
+
+    return clone(task);
   }
 
   const handlers = {
@@ -268,7 +370,31 @@
       return { settings: clone(settings) };
     },
 
-    'task:start': ({ goal }) => startTask(goal),
+    'app:info': () => {
+      const active = tabs.find((tab) => tab.active) || tabs[0];
+      return {
+        version: '1.1.0 (preview)',
+        settings: clone(settings),
+        task: task ? clone(task) : null,
+        tab: {
+          ...clone(active),
+          host: new URL(active.url).host,
+          permission: 'granted',
+          active: true,
+        },
+      };
+    },
+
+    'tabs:list': () => ({
+      tabs: tabsForPicker(),
+      activeTabId: 1,
+      total: tabs.length,
+      truncated: false,
+      hasTabsPermission: tabsPermission,
+      canRequestTabs: true,
+    }),
+
+    'task:start': ({ goal, tabId }) => startTask(goal, tabId),
     'task:stop': () => {
       clearTimers();
       if (task && task.status === 'running') {
@@ -276,36 +402,50 @@
         task.phase = 'stopped';
         task.finishedAt = Date.now();
         task.answer = 'Stopped before the goal was reached.';
+        task.currentAction = null;
         emitProgress();
       }
-      return { task: clone(task) };
+      return { task: task ? clone(task) : null };
     },
     'task:state': () => (task ? clone(task) : null),
-
-    'app:info': () => ({
-      version: '1.0.0 (preview)',
-      settings: clone(settings),
-      task: task ? clone(task) : null,
-      tab: {
-        id: 1,
-        title: 'Running shoes — demo store',
-        url: 'https://demo-store.example/running-shoes',
-        supported: true,
-      },
-    }),
   };
 
   window.chrome = {
+    storage: { local: localArea },
+    permissions: {
+      contains: async ({ origins, permissions } = {}) => {
+        if (Array.isArray(permissions) && permissions.includes('tabs')) return tabsPermission;
+        const list = Array.isArray(origins) ? origins : [];
+        return list.every((origin) => grantedOrigins.has(origin));
+      },
+      request: async ({ origins, permissions } = {}) => {
+        if (Array.isArray(permissions) && permissions.includes('tabs')) {
+          tabsPermission = true;
+          return true;
+        }
+        for (const origin of origins || []) grantedOrigins.add(origin);
+        return true;
+      },
+      remove: async ({ origins } = {}) => {
+        let removed = false;
+        for (const origin of origins || []) removed = grantedOrigins.delete(origin) || removed;
+        return removed;
+      },
+      getAll: async () => ({
+        origins: [...grantedOrigins],
+        permissions: tabsPermission ? ['tabs'] : [],
+      }),
+    },
     runtime: {
       id: 'fta-preview',
       sendMessage: async (message) => {
-        await delay(30);
+        await delay(25);
         const handler = handlers[message.type];
         if (!handler) {
           return { ok: false, error: { message: `No preview handler for ${message.type}` } };
         }
         try {
-          return { ok: true, data: await handler(message) };
+          return { ok: true, data: clone(await handler(message)) };
         } catch (error) {
           return { ok: false, error: { code: 'preview_error', message: error.message } };
         }
@@ -317,7 +457,7 @@
           if (index >= 0) listeners.splice(index, 1);
         },
       },
-      getManifest: () => ({ version: '1.0.0' }),
+      getManifest: () => ({ version: '1.1.0' }),
     },
   };
 })();

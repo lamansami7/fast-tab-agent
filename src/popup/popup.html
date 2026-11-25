@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="auto">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,140 +11,234 @@
       <header class="topbar">
         <div class="brand">
           <span class="logo" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none">
               <path d="M13.4 2.5 5 13.2h5.1l-1.5 8.3 8.6-11H12l1.4-8Z" fill="currentColor" />
             </svg>
           </span>
           <span class="brand-text">
             <strong>Fast Tab Agent</strong>
-            <span>Autonomous browser agent</span>
+            <span id="brandStatus">Ready</span>
           </span>
         </div>
-        <button
-          id="providerChip"
-          class="chip"
-          type="button"
-          aria-haspopup="dialog"
-          aria-controls="viewProviders"
-          title="Manage AI providers"
-        >
-          <span class="chip-dot" id="chipDot"></span>
-          <span class="chip-label" id="chipLabel">Provider</span>
-          <svg class="chev" viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
-            <path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
+        <div class="top-actions">
+          <button
+            id="providerChip"
+            class="chip"
+            type="button"
+            aria-haspopup="dialog"
+            aria-controls="viewSettings"
+            title="Manage AI providers"
+          >
+            <span class="chip-dot" id="chipDot"></span>
+            <span class="chip-label" id="chipLabel">Provider</span>
+          </button>
+          <button
+            id="settingsBtn"
+            class="icon-btn"
+            type="button"
+            aria-label="Open settings"
+            aria-haspopup="dialog"
+            aria-controls="viewSettings"
+            title="Settings"
+          >
+            <svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true">
+              <path
+                d="M10 12.6a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2Z"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+              <path
+                d="M8.4 3.2h3.2l.4 1.6 1.5.9 1.6-.5 1.6 2.7-1.2 1.2v1.8l1.2 1.2-1.6 2.7-1.6-.5-1.5.9-.4 1.6H8.4l-.4-1.6-1.5-.9-1.6.5-1.6-2.7L4.5 11V9.2L3.3 8l1.6-2.7 1.6.5 1.5-.9.4-1.6Z"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
       </header>
 
-      <!-- ------------------------------------------------------ main view -->
-      <main class="view" id="viewMain">
-        <section class="card">
-          <div class="goal-head">
-            <label class="field-label" for="goalInput">What should the agent do?</label>
-            <span class="page-tag" id="pageTag" hidden></span>
+      <!-- ---------------------------------------------------------- main -->
+      <main class="main" id="viewMain">
+        <section class="tabbar" aria-label="Selected tab">
+          <span class="tab-favicon" id="tabFavicon" aria-hidden="true">F</span>
+          <div class="tab-text">
+            <span class="tab-title" id="tabTitle">Loading tab…</span>
+            <span class="tab-meta">
+              <span class="tab-host" id="tabHost">—</span>
+              <span class="sep" aria-hidden="true">·</span>
+              <button class="perm" id="tabPermBtn" type="button" data-state="unknown">Page access</button>
+            </span>
           </div>
-          <textarea
-            id="goalInput"
-            rows="3"
-            spellcheck="false"
-            placeholder="e.g. Find the cheapest pair of running shoes in size 10 and add them to the cart"
-          ></textarea>
-          <div class="goal-actions">
-            <button id="runBtn" class="btn btn-primary" type="button">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
-                <path d="M4.5 2.8c0-.6.7-1 1.2-.6l7 5.2c.4.3.4.9 0 1.2l-7 5.2c-.5.4-1.2 0-1.2-.6V2.8Z" />
+          <button class="icon-btn icon-btn-sm" id="refreshTabBtn" type="button" aria-label="Refresh tab information" title="Refresh tab information">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+              <path d="M13 8a5 5 0 1 1-1.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <path d="M13.2 2.6v3.2H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button class="btn btn-quiet btn-sm" id="tabsBtn" type="button" aria-haspopup="dialog" aria-controls="viewTabs">
+            Tabs
+            <span class="count" id="tabCount" hidden>0</span>
+          </button>
+        </section>
+
+        <section class="chat" id="chatLog" aria-label="Conversation">
+          <div class="empty" id="emptyState">
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
+                <path d="M13.4 2.5 5 13.2h5.1l-1.5 8.3 8.6-11H12l1.4-8Z" fill="currentColor" />
               </svg>
-              <span id="runBtnLabel">Run agent</span>
+            </div>
+            <h1>What should I do on this page?</h1>
+            <p>Ask about the page, find something, or let the agent take a few steps for you.</p>
+            <div class="suggestions" id="suggestions">
+              <button type="button" class="suggestion" data-prompt="Summarize this page.">Summarize this page</button>
+              <button type="button" class="suggestion" data-prompt="Find the main links on this page.">Find the main links</button>
+              <button type="button" class="suggestion" data-prompt="Find the contact form and tell me what information it asks for.">Inspect the contact form</button>
+              <button type="button" class="suggestion" data-prompt="Search this page for information about refunds.">Search for refunds</button>
+            </div>
+            <p class="empty-note">Page content is read only when you send a request. Nothing runs in the background.</p>
+          </div>
+          <div class="messages" id="messages" role="log" aria-live="off"></div>
+        </section>
+
+        <footer class="composer">
+          <div class="composer-box" id="composerBox">
+            <label class="sr-only" for="goalInput">Message Fast Tab Agent</label>
+            <textarea
+              id="goalInput"
+              rows="1"
+              spellcheck="false"
+              placeholder="Ask or describe a task…"
+            ></textarea>
+            <button class="send-btn" id="runBtn" type="button" aria-label="Send request" title="Send (Enter)">
+              <svg viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true">
+                <path d="M8 13V3.6M4.3 7.2 8 3.4l3.7 3.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
             </button>
-            <button id="stopBtn" class="btn btn-ghost" type="button" hidden>Stop</button>
-            <span class="run-meta" id="runMeta"></span>
+            <button class="send-btn send-stop" id="stopBtn" type="button" aria-label="Stop the running task" title="Stop task" hidden>
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true">
+                <rect x="4" y="4" width="8" height="8" rx="1.5" />
+              </svg>
+            </button>
           </div>
-          <p class="hint" id="goalHint" role="status" aria-live="polite"></p>
-        </section>
-
-        <section class="run" id="runSection" hidden aria-live="polite">
-          <div class="run-head">
-            <span class="run-status" id="runStatus">Ready</span>
-            <span class="run-progress" id="runProgress"></span>
+          <div class="composer-foot">
+            <span class="hint" id="goalHint" role="status" aria-live="polite"></span>
+            <span class="kbd-hint">Enter ↵ · Shift+Enter for a new line</span>
           </div>
-          <p class="run-goal" id="runGoal"></p>
-          <ol class="timeline" id="timeline"></ol>
-          <div class="run-answer" id="runAnswer" hidden></div>
-        </section>
-
-        <section class="tips" id="tips">
-          <h2>How it works</h2>
-          <ol>
-            <li>Pick or add a provider — any OpenAI-compatible endpoint works.</li>
-            <li>Describe the task in plain language.</li>
-            <li>The agent reads the page, plans, and acts one step at a time.</li>
-          </ol>
-          <p class="tips-note">Requests run in the background worker. Your API key is never exposed to the page.</p>
-        </section>
+        </footer>
       </main>
 
-      <!-- ------------------------------------------------- providers view -->
-      <section class="overlay" id="viewProviders" role="dialog" aria-modal="true" aria-labelledby="providersTitle" hidden>
+      <!-- ------------------------------------------------------ settings -->
+      <section class="overlay" id="viewSettings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" hidden>
         <div class="overlay-head">
-          <button class="icon-btn" id="providersBack" type="button" aria-label="Back to agent">
+          <button class="icon-btn" id="settingsBack" type="button" aria-label="Back to the agent">
             <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true">
               <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </button>
           <div class="overlay-titles">
-            <h1 id="providersTitle">AI providers</h1>
-            <p id="providersSub">Every configuration is stored separately</p>
+            <h1 id="settingsTitle">Settings</h1>
+            <p id="settingsSub">Provider, permissions and agent behaviour</p>
           </div>
-          <button class="icon-btn icon-btn-accent" id="addProviderBtn" type="button" aria-label="Add a provider" title="Add a provider">
-            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true">
-              <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-            </svg>
-          </button>
         </div>
-        <div class="overlay-body">
-          <ul class="provider-list" id="providerList"></ul>
-          <p class="empty-note" id="providerEmpty" hidden>
-            No providers yet. Add one to get started — presets are just templates, you can edit every field.
-          </p>
 
-          <details class="prefs" id="prefs">
-            <summary>
-              <span>Agent preferences</span>
-              <svg class="chev" viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
-                <path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </summary>
-            <div class="prefs-body">
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+          <button class="settings-tab" id="tabAi" type="button" role="tab" aria-selected="true" aria-controls="panelProviders" data-panel="ai">AI provider</button>
+          <button class="settings-tab" id="tabBehavior" type="button" role="tab" aria-selected="false" aria-controls="panelBehavior" data-panel="behavior">Behaviour</button>
+        </div>
+
+        <div class="overlay-body settings-body">
+          <div id="panelProviders" role="tabpanel" aria-labelledby="tabAi">
+            <div class="section-head">
+              <h2>Providers</h2>
+              <button class="btn btn-quiet btn-sm" id="addProviderBtn" type="button" aria-haspopup="dialog" aria-controls="viewNew">
+                <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+                  <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                </svg>
+                Add
+              </button>
+            </div>
+            <ul class="provider-list" id="providerList"></ul>
+            <p class="empty-note" id="providerEmpty" hidden>
+              No providers yet. Add one to get started — presets are templates, and every field stays editable.
+            </p>
+            <p class="foot-note">Requests run in the background worker. Your API key never reaches the page you are browsing.</p>
+          </div>
+
+          <div id="panelBehavior" role="tabpanel" aria-labelledby="tabBehavior" hidden>
+            <section class="section">
+              <h2>Appearance</h2>
               <div class="field-inline">
-                <label for="prefMaxSteps">Max steps per task</label>
+                <label for="prefTheme">Theme</label>
+                <select id="prefTheme">
+                  <option value="auto">Match system</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </div>
+            </section>
+
+            <section class="section">
+              <h2>Agent behaviour</h2>
+              <div class="field-inline">
+                <label for="prefMaxSteps">Maximum steps per request</label>
                 <input id="prefMaxSteps" type="number" min="1" max="20" step="1" inputmode="numeric" />
               </div>
               <label class="check">
                 <input type="checkbox" id="prefShowHud" />
-                <span>Show status pill on the page while running</span>
+                <span>Show a status pill on the page while the agent works</span>
               </label>
               <label class="check">
                 <input type="checkbox" id="prefJsonMode" />
-                <span>Request JSON mode from the provider (optional)</span>
+                <span>Ask providers for JSON mode (optional, some models reject it)</span>
               </label>
               <label class="check">
                 <input type="checkbox" id="prefPrivateHttp" />
-                <span>Allow plain http:// to private LAN addresses</span>
+                <span>Allow plain http:// to private LAN model servers</span>
               </label>
-              <p class="prefs-note">Remote endpoints must use HTTPS. API keys are stored only in chrome.storage.local.</p>
-            </div>
-          </details>
-        </div>
-        <div class="overlay-foot overlay-foot--flat">
-          <span class="foot-note" id="providersFootNote">Changes save automatically</span>
-          <button class="btn btn-primary" id="providersDone" type="button">Done</button>
+              <p class="foot-note">Fewer steps are faster. More steps let the agent recover from page changes and multi-page tasks.</p>
+            </section>
+
+            <section class="section">
+              <h2>Website and endpoint access</h2>
+              <p class="section-note">
+                Access is requested only when you run the agent on a tab or use an AI endpoint. Revoke a site to remove it completely. Revoking a provider host means Chrome will ask again next time.
+              </p>
+              <ul class="access-list" id="siteAccessList"></ul>
+              <p class="empty-note" id="siteAccessEmpty" hidden>No website access has been granted.</p>
+              <button class="link-btn" id="refreshAccessBtn" type="button">Refresh access list</button>
+            </section>
+
+            <section class="section">
+              <h2>Conversation</h2>
+              <div class="field-inline">
+                <span id="chatCount">No messages</span>
+                <button class="btn btn-quiet btn-sm" id="clearChatBtn" type="button">Clear</button>
+              </div>
+              <div class="confirm" id="clearConfirm" hidden>
+                <p><strong>Clear this conversation?</strong> Saved requests and answers are removed from this browser.</p>
+                <div class="confirm-actions">
+                  <button type="button" class="btn btn-quiet btn-sm" id="clearCancel">Cancel</button>
+                  <button type="button" class="btn btn-danger btn-sm" id="clearConfirmBtn">Clear</button>
+                </div>
+              </div>
+              <p class="foot-note">Conversation history is stored locally. Page content is never saved as raw HTML.</p>
+            </section>
+
+            <section class="section">
+              <h2>About</h2>
+              <div class="field-inline"><span>Version</span><span class="mono" id="versionLabel">—</span></div>
+              <p class="foot-note">After changing extension files, reload the extension in chrome://extensions, then reload the tab you want the agent to use.</p>
+            </section>
+          </div>
         </div>
       </section>
 
-      <!-- ----------------------------------------------- add provider view -->
+      <!-- ---------------------------------------------------- add provider -->
       <section class="overlay" id="viewNew" role="dialog" aria-modal="true" aria-labelledby="newTitle" hidden>
         <div class="overlay-head">
-          <button class="icon-btn" id="newBack" type="button" aria-label="Back to providers">
+          <button class="icon-btn" id="newBack" type="button" aria-label="Back to settings">
             <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true">
               <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
@@ -171,7 +265,7 @@
         </div>
       </section>
 
-      <!-- --------------------------------------------------- editor view -->
+      <!-- -------------------------------------------------------- editor -->
       <section class="overlay" id="viewEditor" role="dialog" aria-modal="true" aria-labelledby="editorTitle" hidden>
         <div class="overlay-head">
           <button class="icon-btn" id="editorBack" type="button" aria-label="Back to providers">
@@ -200,17 +294,9 @@
 
           <div class="field">
             <label for="fBaseUrl">Base URL</label>
-            <input
-              id="fBaseUrl"
-              name="baseUrl"
-              type="text"
-              inputmode="url"
-              spellcheck="false"
-              placeholder="https://api.example.com/v1"
-              autocomplete="off"
-            />
+            <input id="fBaseUrl" name="baseUrl" type="text" inputmode="url" spellcheck="false" placeholder="https://api.example.com/v1" autocomplete="off" />
             <p class="field-hint" id="endpointPreview"></p>
-            <p class="field-hint">Chrome asks for access to this host only when you test it, fetch models, or run a task. Access can be removed in Chrome site settings or here; forgetting it also affects other providers on this host.</p>
+            <p class="field-hint">Chrome asks for access to this host only when you test it, fetch models, or run a task.</p>
             <button class="link-btn" id="forgetEndpointPermission" type="button">Forget this endpoint's host access</button>
             <p class="field-error" id="errBaseUrl" role="alert" hidden></p>
           </div>
@@ -220,14 +306,7 @@
               <label for="fModel">Model</label>
               <button class="link-btn" id="fetchModelsBtn" type="button">Fetch models</button>
             </div>
-            <input
-              id="fModel"
-              name="model"
-              type="text"
-              spellcheck="false"
-              placeholder="model-id"
-              autocomplete="off"
-            />
+            <input id="fModel" name="model" type="text" spellcheck="false" placeholder="model-id" autocomplete="off" />
             <p class="field-hint">Any model id your endpoint accepts. Nothing is hardcoded.</p>
             <div class="model-list" id="modelList" hidden></div>
             <p class="field-error" id="errModel" role="alert" hidden></p>
@@ -236,14 +315,7 @@
           <div class="field">
             <label for="fApiKey">API key</label>
             <div class="input-with-affix">
-              <input
-                id="fApiKey"
-                name="apiKey"
-                type="password"
-                spellcheck="false"
-                placeholder="Paste your key"
-                autocomplete="new-password"
-              />
+              <input id="fApiKey" name="apiKey" type="password" spellcheck="false" placeholder="Paste your key" autocomplete="new-password" />
               <button type="button" class="affix-btn" id="toggleKey" aria-pressed="false" aria-label="Show API key">
                 <svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true">
                   <path d="M2.5 10S5.5 5 10 5s7.5 5 7.5 5-3 5-7.5 5-7.5-5-7.5-5Z" stroke="currentColor" stroke-width="1.4" />
@@ -319,7 +391,7 @@
           <div class="confirm" id="deleteConfirm" hidden>
             <p><strong>Delete this provider?</strong> Its API key and settings are removed from this browser.</p>
             <div class="confirm-actions">
-              <button type="button" class="btn btn-ghost" id="deleteCancel">Cancel</button>
+              <button type="button" class="btn btn-quiet" id="deleteCancel">Cancel</button>
               <button type="button" class="btn btn-danger" id="deleteConfirmBtn">Delete</button>
             </div>
           </div>
@@ -327,9 +399,55 @@
 
         <div class="overlay-foot">
           <div class="save-state" id="saveState"><span class="save-dot"></span><span id="saveStateText">Saved</span></div>
-          <button type="button" class="btn btn-ghost" id="activateBtn">Use this provider</button>
+          <button type="button" class="btn btn-quiet" id="activateBtn">Use this provider</button>
           <button type="button" class="btn btn-primary" id="testBtn">Test connection</button>
           <button type="button" class="danger-link" id="deleteBtn">Delete</button>
+        </div>
+      </section>
+
+      <!-- ----------------------------------------------------- tab picker -->
+      <section class="overlay" id="viewTabs" role="dialog" aria-modal="true" aria-labelledby="tabsTitle" hidden>
+        <div class="overlay-head">
+          <button class="icon-btn" id="tabsBack" type="button" aria-label="Back to the agent">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" aria-hidden="true">
+              <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <div class="overlay-titles">
+            <h1 id="tabsTitle">Open tabs</h1>
+            <p id="tabsSub">Choose the tab the agent should work with</p>
+          </div>
+          <button class="icon-btn" id="tabsRefreshBtn" type="button" aria-label="Refresh tab list" title="Refresh tab list">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true">
+              <path d="M13 8a5 5 0 1 1-1.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <path d="M13.2 2.6v3.2H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="overlay-body tabs-body">
+          <label class="search">
+            <span class="sr-only">Search tabs</span>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.2" stroke="currentColor" stroke-width="1.5" />
+              <path d="m10.2 10.2 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <input id="tabSearch" type="search" placeholder="Search by title or site" autocomplete="off" spellcheck="false" />
+          </label>
+
+          <div class="banner banner-info" id="tabsPermissionBanner" hidden>
+            <strong>Show tab titles</strong>
+            <span>Chrome hides other tabs' titles until you allow tab-list access. It is used only for this picker, and no page content is read.</span>
+            <button class="btn btn-quiet btn-sm" id="grantTabsBtn" type="button">Allow tab list</button>
+          </div>
+
+          <ul class="tab-list" id="tabList"></ul>
+          <p class="empty-note" id="tabEmpty" hidden>No tabs match that search.</p>
+        </div>
+
+        <div class="overlay-foot overlay-foot--flat">
+          <span class="foot-note" id="tabFootNote">Only the tab you select is read.</span>
+          <button class="btn btn-primary" id="tabsDone" type="button">Done</button>
         </div>
       </section>
 

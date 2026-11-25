@@ -77,6 +77,7 @@ export async function runAgentTask(params) {
   for (let step = 1; step <= maxSteps; step += 1) {
     if (isCancelled()) return { status: 'stopped', steps, answer, plan };
 
+    safeEmit(onEvent, { phase: 'reading', step });
     let snapshot;
     try {
       snapshot = await getSnapshot();
@@ -88,6 +89,8 @@ export async function runAgentTask(params) {
       safeEmit(onEvent, { phase: 'error', error: friendlyError(lastError) });
       return { status: 'error', steps, answer, plan, error: friendlyError(lastError) };
     }
+    // Reading the page may have taken long enough for the user to stop the task.
+    if (isCancelled()) return { status: 'stopped', steps, answer, plan };
 
     safeEmit(onEvent, { phase: 'thinking', step: step });
 
@@ -162,6 +165,7 @@ export async function runAgentTask(params) {
     plan = response.plan.length ? response.plan : plan;
 
     if (response.done) {
+      safeEmit(onEvent, { phase: 'finishing', step });
       answer = response.answer || answer;
       const entry = {
         step,
@@ -186,6 +190,14 @@ export async function runAgentTask(params) {
     }
 
     if (isCancelled()) return { status: 'stopped', steps, answer, plan };
+
+    // Announce the action before running it so the popup can show live progress.
+    safeEmit(onEvent, {
+      phase: 'action',
+      step,
+      action,
+      description: describeAction(action),
+    });
 
     let outcome;
     try {

@@ -32,6 +32,7 @@ if (JSDOM) {
           <input id="q" type="search" placeholder="Search products">
           <input id="password" type="password" value="super-secret">
           <input id="email" type="email" value="person@example.com" autocomplete="email">
+          <input id="otp" type="text" autocomplete="one-time-code" placeholder="Verification code">
           <button id="go" type="button">Search now</button>
         </form>
         <button id="disabled" type="button" disabled>Disabled control</button>
@@ -138,6 +139,10 @@ if (JSDOM) {
     const emailField = snapshot.elements.find((element) => element.type === 'email');
     assert.ok(emailField?.sensitive);
     assert.equal(emailField.value, undefined);
+    const otpField = snapshot.elements.find((element) => element.placeholder === 'Verification code');
+    assert.ok(otpField, 'verification code fields are visible in the snapshot');
+    assert.equal(otpField.secret, true, 'one-time-code fields are marked secret');
+    assert.equal(otpField.value, undefined);
     assert.equal(snapshot.text.includes('super-secret'), false);
     for (const element of snapshot.elements) assert.equal(typeof element.id, 'number');
     assert.ok(snapshot.headings.includes('Shop for shoes'));
@@ -198,6 +203,24 @@ if (JSDOM) {
       action: { type: 'type', elementId: searchInput.id, text: ' red', clear: false },
     });
     assert.equal(window.document.getElementById('q').value, 'running shoes red');
+
+    // Ordinary contact fields remain fillable, but their value is not echoed.
+    const emailType = await send({
+      type: 'fta:execute',
+      action: { type: 'type', elementId: emailField.id, text: 'new@example.com' },
+    });
+    assert.equal(emailType.ok, true);
+    assert.equal(window.document.getElementById('email').value, 'new@example.com');
+    assert.match(emailType.observation, /\[value hidden\]/);
+
+    // Passwords, payment fields and one-time codes are never typed into.
+    const otpType = await send({
+      type: 'fta:execute',
+      action: { type: 'type', elementId: otpField.id, text: '123456' },
+    });
+    assert.equal(otpType.ok, false);
+    assert.match(otpType.observation, /sensitive field/i);
+    assert.equal(window.document.getElementById('otp').value, '');
 
     // 5. select by visible text
     const selectResult = await send({

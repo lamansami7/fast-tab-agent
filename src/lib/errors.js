@@ -33,6 +33,9 @@ export const ERROR_CODES = {
   cancelled: 'cancelled',
   no_active_provider: 'no_active_provider',
   no_api_key: 'no_api_key',
+  tab_unavailable: 'tab_unavailable',
+  tab_restricted: 'tab_restricted',
+  tab_permission_required: 'tab_permission_required',
 };
 
 const HINTS = {
@@ -58,6 +61,12 @@ const HINTS = {
   invalid_config: 'Finish configuring this provider first.',
   cancelled: 'Cancelled.',
   no_active_provider: 'Add and activate an AI provider first.',
+  tab_unavailable:
+    'That tab is no longer open. Pick another tab or reopen the page, then try again.',
+  tab_restricted:
+    'Chrome does not allow extensions to read or control this page. Open a normal website instead.',
+  tab_permission_required:
+    'Website access is required before the agent can work on that tab. Grant access in the tab picker and try again.',
 };
 
 export function hintFor(code) {

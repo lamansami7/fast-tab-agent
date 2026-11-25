@@ -21,9 +21,22 @@ import {
   validateProvider,
   validateProviderForRequest,
 } from './lib/providers.js';
-import { DEFAULT_SETTINGS, LIMITS, STORAGE_KEYS, TASK_STORAGE_KEY, TASK_STATUS } from './lib/constants.js';
+import {
+  DEFAULT_SETTINGS,
+  LIMITS,
+  STORAGE_KEYS,
+  TAB_LIST_LIMIT,
+  TASK_STORAGE_KEY,
+  TASK_STATUS,
+} from './lib/constants.js';
 import { ERROR_CODES, ProviderError, friendlyError } from './lib/errors.js';
 import { runAgentTask } from './lib/agent-runner.js';
+import {
+  classifyTabUrl,
+  originPatternFor,
+  tabHost,
+  tabTitleFor,
+} from './lib/tabs.js';
 
 // chrome.storage.local is readable by untrusted contexts by default on some
 // Chrome versions. Fail closed unless API-key storage is restricted before any
@@ -82,6 +95,7 @@ function sanitizeSettings(raw) {
   for (const key of ['jsonMode', 'allowPrivateHttp', 'showHud']) {
     if (typeof source[key] === 'boolean') settings[key] = source[key];
   }
+  if (['auto', 'light', 'dark'].includes(source.theme)) settings.theme = source.theme;
   return settings;
 }
 
@@ -109,6 +123,8 @@ async function saveSettings(patch) {
  *                limitReached:boolean, phase:string}} */
 let currentTask = null;
 let abortController = null;
+/** Guard against two `task:start` messages racing before currentTask exists. */
+let startingTask = false;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -150,6 +166,11 @@ function publicTask(task = currentTask) {
     limitReached: task.limitReached,
     provider: task.provider,
     tabId: task.tabId,
+    tabTitle: task.tabTitle || '',
+    tabHost: task.tabHost || '',
+    currentStep: task.currentStep || 0,
+    currentAction: task.currentAction || null,
+    currentActionLabel: task.currentActionLabel || '',
   };
 }
 
@@ -222,14 +243,180 @@ async function ensureInjected(tabId) {
       target: { tabId, allFrames: false },
       files: ['src/content/agent.js'],
     });
-  } catch {
-    throw new Error(
-      'Fast Tab Agent cannot read this page. Open a normal http(s) website and try again.',
+  } catch (error) {
+    const detail = String(error?.message || '').toLowerCase();
+    if (detail.includes('chrome web store') || detail.includes('cannot be scripted')) {
+      throw new ProviderError(
+        ERROR_CODES.tab_restricted,
+        'Chrome blocks extensions on this page, so it cannot be read.',
+        { hint: 'Open a normal website, or use a different tab.' },
+      );
+    }
+    throw new ProviderError(
+      ERROR_CODES.tab_permission_required,
+      'Chrome did not allow the page agent to start on this tab.',
+      { hint: 'Grant website access for this tab, reload the page, and try again.' },
     );
   }
   const ready = await pingTab(tabId);
-  if (!ready) throw new Error('The page agent did not start on this tab.');
+  if (!ready) {
+    throw new ProviderError(
+      ERROR_CODES.tab_unavailable,
+      'The page agent did not start on this tab.',
+      { hint: 'Reload the tab and try again. Some pages replace their content during loading.' },
+    );
+  }
   return true;
+}
+
+/** Narrow, secret-free metadata for the current task. */
+function taskTabMetadata(tab) {
+  const url = tab?.url || tab?.pendingUrl || '';
+  return {
+    title: tabTitleFor(tab),
+    host: tabHost(url),
+  };
+}
+
+/**
+ * Resolve the tab a task should run on.
+ *
+ * The popup passes the tab the user explicitly selected. Missing host access
+ * is rejected here even when the popup says it granted it, so the worker never
+ * assumes access it does not have.
+ */
+async function resolveTargetTab(requestedTabId) {
+  let tab = null;
+  if (requestedTabId !== undefined && requestedTabId !== null && requestedTabId !== '') {
+    const id = Number(requestedTabId);
+    if (!Number.isInteger(id) || id < 0) {
+      throw new ProviderError(ERROR_CODES.tab_unavailable, 'That tab could not be identified.');
+    }
+    try {
+      tab = await chrome.tabs.get(id);
+    } catch {
+      throw new ProviderError(
+        ERROR_CODES.tab_unavailable,
+        'That tab was closed before the task started.',
+      );
+    }
+  } else {
+    tab = await getActiveTab();
+    if (!tab || typeof tab.id !== 'number') throw new Error('No active tab found.');
+  }
+
+  const url = tab.url || tab.pendingUrl || '';
+  const check = classifyTabUrl(url);
+  if (!check.supported) {
+    throw new ProviderError(
+      check.code === 'no_url' ? ERROR_CODES.tab_unavailable : ERROR_CODES.tab_restricted,
+      check.reason,
+      { hint: 'Choose a normal http(s) page in the tab picker.' },
+    );
+  }
+
+  const active = await getActiveTab();
+  const isActive = active && active.id === tab.id;
+  if (!isActive) {
+    const origin = originPatternFor(url);
+    const granted =
+      origin && chrome.permissions?.contains
+        ? await chrome.permissions.contains({ origins: [origin] }).catch(() => false)
+        : false;
+    if (!granted) {
+      throw new ProviderError(
+        ERROR_CODES.tab_permission_required,
+        `Fast Tab Agent does not have access to ${tabHost(url) || 'that website'} yet.`,
+        { hint: 'Open the tab picker and grant access to this tab, then send the request again.' },
+      );
+    }
+  }
+  return tab;
+}
+
+/**
+ * List open tabs with only the metadata the picker needs. Page content is not
+ * read here; it is read later, for the one tab the user selects.
+ */
+async function tabsList() {
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    throw new Error('Chrome could not list the open tabs. Try again.');
+  }
+
+  const active = await getActiveTab();
+  const hasPermissionCheck = typeof chrome.permissions?.contains === 'function';
+  let hasTabsPermission = false;
+  if (hasPermissionCheck) {
+    try {
+      hasTabsPermission = (await chrome.permissions.contains({ permissions: ['tabs'] })) === true;
+    } catch {
+      hasTabsPermission = false;
+    }
+  }
+
+  const originCache = new Map();
+  const list = [];
+  for (const tab of tabs.slice(0, TAB_LIST_LIMIT)) {
+    if (typeof tab?.id !== 'number') continue;
+    const rawUrl = typeof tab.url === 'string' ? tab.url : typeof tab.pendingUrl === 'string' ? tab.pendingUrl : '';
+    // Without the optional `tabs` permission Chrome hides title and URL for
+    // other tabs. That is “unknown”, not “restricted”: the picker can request
+    // tab-list access and then classify the real URL.
+    const check = rawUrl
+      ? classifyTabUrl(rawUrl)
+      : { supported: true, code: 'unknown', reason: '' };
+    let permission = 'unknown';
+    if (rawUrl) {
+      if (!check.supported) permission = 'unavailable';
+      else if (tab.id === active?.id) permission = 'granted';
+      else if (hasPermissionCheck) {
+        const origin = originPatternFor(rawUrl);
+        if (origin) {
+          if (!originCache.has(origin)) {
+            originCache.set(
+              origin,
+              await chrome.permissions.contains({ origins: [origin] }).catch(() => false),
+            );
+          }
+          permission = originCache.get(origin) ? 'granted' : 'needed';
+        }
+      }
+    }
+
+    const favicon =
+      typeof tab.favIconUrl === 'string' &&
+      tab.favIconUrl.length <= 2048 &&
+      /^(https:|data:image\/)/i.test(tab.favIconUrl)
+        ? tab.favIconUrl
+        : '';
+
+    list.push({
+      id: tab.id,
+      windowId: tab.windowId,
+      index: tab.index,
+      title: tab.title || '',
+      url: rawUrl,
+      favIconUrl: favicon,
+      active: tab.id === active?.id,
+      pinned: tab.pinned === true,
+      supported: check.supported,
+      restricted: !check.supported,
+      reason: check.reason,
+      permission,
+    });
+  }
+
+  return {
+    tabs: list,
+    activeTabId: active?.id ?? null,
+    total: tabs.length,
+    truncated: tabs.length > list.length,
+    hasTabsPermission,
+    canRequestTabs: hasPermissionCheck,
+  };
 }
 
 async function sendToTab(tabId, message) {
@@ -315,8 +502,12 @@ async function finishTask(outcome) {
   currentTask.error = outcome.error || null;
   currentTask.limitReached = Boolean(outcome.limitReached);
   currentTask.finishedAt = Date.now();
-  currentTask.phase = currentTask.status;
+      currentTask.phase = currentTask.status;
+  currentTask.currentAction = null;
+  currentTask.currentActionLabel = '';
+  currentTask.currentActionLabel = '';
   if (!currentTask.steps.length && Array.isArray(outcome.steps)) currentTask.steps = outcome.steps;
+
 
   abortController = null;
   const tabId = currentTask.tabId;
@@ -335,55 +526,66 @@ async function finishTask(outcome) {
   await persistTask();
 }
 
-async function startTask(goalInput) {
+async function startTask(goalInput, requestedTabId) {
+  if (startingTask) throw new Error('A task is already starting. Wait a moment.');
   if (currentTask && currentTask.status === TASK_STATUS.running) {
     throw new Error('A task is already running. Stop it first.');
   }
-  // If this worker was restarted, recover an orphaned in-session task record
-  // before a new run overwrites it. Tasks are not resumed automatically.
-  await taskState();
 
-  const goal = String(goalInput || '').trim().slice(0, LIMITS.maxTaskGoal);
-  if (!goal) throw new Error('Describe what the agent should do on this page.');
+  startingTask = true;
+  let goal;
+  let settings;
+  let provider;
+  let tab;
+  try {
+    // If this worker was restarted, recover an orphaned in-session task record
+    // before a new run overwrites it. Tasks are not resumed automatically.
+    await taskState();
 
-  await ensureInit();
-  const settings = await getSettings();
-  hudEnabled = settings.showHud !== false;
-  const provider = await store.getActive();
-  if (!provider) {
-    throw new ProviderError(ERROR_CODES.no_active_provider, 'Add and activate an AI provider first.');
+    goal = String(goalInput || '').trim().slice(0, LIMITS.maxTaskGoal);
+    if (!goal) throw new Error('Describe what the agent should do on this page.');
+
+    await ensureInit();
+    settings = await getSettings();
+    hudEnabled = settings.showHud !== false;
+    provider = await store.getActive();
+    if (!provider) {
+      throw new ProviderError(ERROR_CODES.no_active_provider, 'Add and activate an AI provider first.');
+    }
+    const check = validateProviderForRequest(provider, { allowPrivateHttp: settings.allowPrivateHttp });
+    if (!check.valid) {
+      const [field, message] = Object.entries(check.errors)[0] || ['config', 'Finish configuring this provider.'];
+      throw new ProviderError(ERROR_CODES.invalid_config, message, { field });
+    }
+
+    await requireProviderHostPermission(provider, settings.allowPrivateHttp);
+    tab = await resolveTargetTab(requestedTabId);
+    await ensureInjected(tab.id);
+
+    const metadata = taskTabMetadata(tab);
+    currentTask = {
+      id: `task_${Date.now().toString(36)}`,
+      goal,
+      status: TASK_STATUS.running,
+      phase: 'starting',
+      steps: [],
+      startedAt: Date.now(),
+      finishedAt: null,
+      answer: '',
+      error: null,
+      maxSteps: settings.maxSteps,
+      provider: { id: provider.id, name: provider.name, model: provider.model },
+      tabId: tab.id,
+      tabTitle: metadata.title,
+      tabHost: metadata.host,
+      limitReached: false,
+      currentStep: 0,
+      currentAction: null,
+      currentActionLabel: '',
+    };
+  } finally {
+    startingTask = false;
   }
-  const check = validateProviderForRequest(provider, { allowPrivateHttp: settings.allowPrivateHttp });
-  if (!check.valid) {
-    const [field, message] = Object.entries(check.errors)[0] || ['config', 'Finish configuring this provider.'];
-    throw new ProviderError(ERROR_CODES.invalid_config, message, { field });
-  }
-
-  await requireProviderHostPermission(provider, settings.allowPrivateHttp);
-
-  const tab = await getActiveTab();
-  if (!tab || typeof tab.id !== 'number') throw new Error('No active tab found.');
-  if (!tab.url || !/^https?:/i.test(tab.url)) {
-    throw new Error('Open a normal website (http or https) before running the agent.');
-  }
-
-  await ensureInjected(tab.id);
-
-  currentTask = {
-    id: `task_${Date.now().toString(36)}`,
-    goal,
-    status: TASK_STATUS.running,
-    phase: 'starting',
-    steps: [],
-    startedAt: Date.now(),
-    finishedAt: null,
-    answer: '',
-    error: null,
-    maxSteps: settings.maxSteps,
-    provider: { id: provider.id, name: provider.name, model: provider.model },
-    tabId: tab.id,
-    limitReached: false,
-  };
   abortController = new AbortController();
   broadcast(currentTask);
   persistTask();
@@ -410,17 +612,35 @@ async function startTask(goalInput) {
     if (!currentTask || currentTask.id !== taskId || currentTask.status !== TASK_STATUS.running) return;
     switch (event.phase) {
       case 'start':
-        currentTask.phase = 'thinking';
+        currentTask.phase = 'starting';
+        break;
+      case 'reading':
+        currentTask.phase = 'reading';
+        currentTask.currentStep = event.step || currentTask.currentStep;
         break;
       case 'thinking':
         currentTask.phase = 'thinking';
         currentTask.currentStep = event.step;
+        currentTask.currentAction = null;
+        currentTask.currentActionLabel = '';
         sendHud(tab.id, { running: true, step: event.step, maxSteps: settings.maxSteps });
+        break;
+      case 'action':
+        currentTask.phase = 'acting';
+        currentTask.currentAction = event.action || null;
+        currentTask.currentActionLabel = event.description || '';
         break;
       case 'step':
         pushStep(event.step);
         currentTask.phase = 'acting';
+        currentTask.currentAction = null;
+        currentTask.currentActionLabel = '';
         sendHud(tab.id, { running: true, step: event.step.step, maxSteps: settings.maxSteps });
+        break;
+      case 'finishing':
+        currentTask.phase = 'finishing';
+        currentTask.currentAction = null;
+        currentTask.currentActionLabel = '';
         break;
       case 'error':
         currentTask.error = event.error;
@@ -581,15 +801,22 @@ async function providerModels(message) {
 async function appInfo() {
   const tab = await getActiveTab();
   const settings = await getSettings();
+  const rawUrl = tab?.url || tab?.pendingUrl || '';
+  const check = classifyTabUrl(rawUrl);
   return {
     version: chrome.runtime.getManifest().version,
     settings,
     tab: tab
       ? {
           id: tab.id,
-          title: tab.title || '',
-          url: tab.url || '',
-          supported: Boolean(tab.url && /^https?:/i.test(tab.url)),
+          title: tabTitleFor(tab),
+          url: rawUrl,
+          host: tabHost(rawUrl),
+          supported: check.supported,
+          restricted: !check.supported,
+          reason: check.reason,
+          permission: check.supported ? 'granted' : 'unavailable',
+          active: true,
         }
       : null,
     task: publicTask(),
@@ -630,9 +857,10 @@ const handlers = {
   'providers:models': (message) => providerModels(message),
   'settings:get': async () => ({ settings: await getSettings() }),
   'settings:save': (message) => saveSettings(message.settings || message.patch || {}).then((settings) => ({ settings })),
-  'task:start': (message) => startTask(message.goal),
+  'task:start': (message) => startTask(message.goal, message.tabId),
   'task:stop': async () => ({ task: stopTask() }),
   'task:state': () => taskState(),
+  'tabs:list': () => tabsList(),
   'app:info': () => appInfo(),
 };
 

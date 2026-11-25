@@ -53,8 +53,15 @@ test('runs actions until the model reports done', async () => {
   assert.equal(result.answer, 'Opened the sign in page.');
   assert.equal(result.steps.length, 2);
   assert.deepEqual(executed, [{ type: 'click', elementId: 1 }]);
+  assert.ok(events.some((event) => event.phase === 'reading'));
   assert.ok(events.some((event) => event.phase === 'thinking'));
+  assert.ok(events.some((event) => event.phase === 'action'));
   assert.ok(events.some((event) => event.phase === 'step'));
+  assert.ok(events.some((event) => event.phase === 'finishing'));
+
+  const actionEvent = events.find((event) => event.phase === 'action');
+  assert.deepEqual(actionEvent.action, { type: 'click', elementId: 1 });
+  assert.equal(actionEvent.step, 1);
 });
 
 test('repairs malformed JSON with one extra model call', async () => {
