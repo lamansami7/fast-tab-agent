@@ -1,0 +1,629 @@
+/**
+ * Fast Tab Agent — page agent (content script).
+ *
+ * Injected on demand by the background worker. Responsibilities:
+ *   - produce a compact, stable snapshot of the page for the model;
+ *   - perform one validated action at a time;
+ *   - show a small status pill while a task runs.
+ *
+ * It never sees provider configuration or API keys: only goal text, action
+ * objects and page content flow through this script.
+ */
+(function () {
+  if (window.__ftaAgentLoaded) return;
+  window.__ftaAgentLoaded = true;
+
+  const MAX_ELEMENTS = 400;
+  const SELECTOR = [
+    'a[href]',
+    'button',
+    'input:not([type="hidden"])',
+    'select',
+    'textarea',
+    'summary',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="switch"]',
+    '[role="tab"]',
+    '[role="menuitem"]',
+    '[role="menuitemcheckbox"]',
+    '[role="option"]',
+    '[role="combobox"]',
+    '[role="searchbox"]',
+    '[contenteditable="true"]',
+    '[contenteditable=""]',
+    '[onclick]',
+  ].join(',');
+
+  /** Stable ids across snapshots, so history references stay meaningful. */
+  let nextId = 1;
+  const idByElement = new WeakMap();
+  const elementById = new Map();
+
+  function stableId(el) {
+    let id = idByElement.get(el);
+    if (!id) {
+      id = nextId++;
+      idByElement.set(el, id);
+      elementById.set(id, el);
+    }
+    return id;
+  }
+
+  function isVisible(el) {
+    if (!(el instanceof Element)) return false;
+    if (el.getAttribute('aria-hidden') === 'true') return false;
+    let style;
+    try {
+      style = window.getComputedStyle(el);
+    } catch {
+      return false;
+    }
+    if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
+    if (style.opacity !== '' && Number(style.opacity) === 0) return false;
+    if (el.getAttribute('aria-modal') === 'false') return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    return true;
+  }
+
+  function inViewport(rect) {
+    return (
+      rect.bottom > 0 &&
+      rect.right > 0 &&
+      rect.top < window.innerHeight &&
+      rect.left < window.innerWidth
+    );
+  }
+
+  const TEXT_INPUT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'password', 'number']);
+
+  function elementLabel(el) {
+    const aria = el.getAttribute('aria-label');
+    if (aria && aria.trim()) return aria.trim();
+
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const parts = labelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.innerText || '')
+        .join(' ')
+        .trim();
+      if (parts) return parts;
+    }
+
+    if (el.labels && el.labels.length) {
+      const text = Array.from(el.labels)
+        .map((label) => label.innerText || '')
+        .join(' ')
+        .trim();
+      if (text) return text;
+    }
+
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input') {
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'submit' || type === 'button' || type === 'reset') {
+        if (el.value) return el.value;
+      }
+      if (el.placeholder) return el.placeholder;
+    }
+    if (tag === 'textarea' && el.placeholder) return el.placeholder;
+
+    const inner = (el.innerText || el.textContent || '').trim();
+    if (inner && inner.length <= 140) return inner;
+    if (inner) return inner.slice(0, 140);
+
+    if (el.title) return el.title;
+    if (tag === 'img' && el.alt) return el.alt;
+    if (el.getAttribute('name')) return el.getAttribute('name');
+    if (el.id) return el.id;
+    if (el.getAttribute('placeholder')) return el.getAttribute('placeholder');
+    return '';
+  }
+
+  function describeElement(el) {
+    const tag = el.tagName.toLowerCase();
+    const label = elementLabel(el).replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!label) return `<${tag}>`;
+    return `${tag} "${label}"`;
+  }
+
+  function isNestedInInteractive(el, collected) {
+    let parent = el.parentElement;
+    let depth = 0;
+    while (parent && depth < 5) {
+      if (collected.has(parent)) return true;
+      parent = parent.parentElement;
+      depth += 1;
+    }
+    return false;
+  }
+
+  function isMeaningful(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return true;
+    if (el.getAttribute('role')) return true;
+    if (el.hasAttribute('onclick')) return true;
+    if (el.hasAttribute('contenteditable')) return true;
+    if (tag === 'button' || tag === 'a' || tag === 'summary') return true;
+    return Boolean(el.getAttribute('aria-label') || el.getAttribute('title'));
+  }
+
+  function snapshot() {
+    const nodes = document.querySelectorAll(SELECTOR);
+    const collected = new Set();
+    const entries = [];
+    let total = 0;
+
+    for (const el of nodes) {
+      if (el.closest('[data-fta-root]')) continue;
+      // Content hidden from assistive tech (or inert) is not actionable.
+      if (el.closest('[aria-hidden="true"]')) continue;
+      if (el.closest('[inert]')) continue;
+      if (!isMeaningful(el)) continue;
+      if (!isVisible(el)) continue;
+      if (isNestedInInteractive(el, collected)) continue;
+      total += 1;
+      if (entries.length >= MAX_ELEMENTS) continue;
+
+      const tag = el.tagName.toLowerCase();
+      const rect = el.getBoundingClientRect();
+      const type = tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+      const entry = {
+        id: stableId(el),
+        tag,
+        type: type || undefined,
+        role: el.getAttribute('role') || undefined,
+        label: elementLabel(el).replace(/\s+/g, ' ').trim().slice(0, 160) || undefined,
+        placeholder: el.getAttribute('placeholder') || undefined,
+        value:
+          tag === 'input' || tag === 'textarea' || tag === 'select'
+            ? String(el.value ?? '').slice(0, 80)
+            : undefined,
+        href: tag === 'a' ? String(el.getAttribute('href') || '').slice(0, 300) : undefined,
+        checked: el.checked === true ? true : undefined,
+        disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true' ? true : undefined,
+        inViewport: inViewport(rect),
+      };
+      // Drop empty synthetic fields to keep the prompt small.
+      for (const key of Object.keys(entry)) {
+        if (entry[key] === undefined || entry[key] === '') delete entry[key];
+      }
+      entries.push(entry);
+      collected.add(el);
+    }
+
+    // Show what the user can actually see first.
+    entries.sort((a, b) => Number(b.inViewport === true) - Number(a.inViewport === true));
+
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]'))
+      .filter(isVisible)
+      .slice(0, 10)
+      .map((h) => (h.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 140))
+      .filter(Boolean);
+
+    let text = '';
+    try {
+      text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 4200);
+    } catch {
+      text = '';
+    }
+
+    const iframes = Array.from(document.querySelectorAll('iframe'))
+      .slice(0, 5)
+      .map((frame) => ({
+        src: (frame.getAttribute('src') || '').slice(0, 200),
+        title: (frame.getAttribute('title') || '').slice(0, 120),
+      }))
+      .filter((frame) => frame.src || frame.title);
+
+    return {
+      url: location.href,
+      title: document.title,
+      scroll: {
+        y: window.scrollY,
+        height: Math.max(
+          document.documentElement?.scrollHeight || 0,
+          document.body?.scrollHeight || 0,
+        ),
+        viewport: window.innerHeight,
+      },
+      elements: entries,
+      headings,
+      text,
+      iframes,
+      truncatedElements: Math.max(0, total - entries.length),
+      capturedAt: Date.now(),
+    };
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function highlight(el) {
+    try {
+      const rect = el.getBoundingClientRect();
+      const ring = document.createElement('div');
+      ring.setAttribute('data-fta-root', 'highlight');
+      Object.assign(ring.style, {
+        position: 'fixed',
+        left: `${Math.max(0, rect.left - 3)}px`,
+        top: `${Math.max(0, rect.top - 3)}px`,
+        width: `${Math.min(window.innerWidth, rect.width + 6)}px`,
+        height: `${Math.min(window.innerHeight, rect.height + 6)}px`,
+        border: '2px solid #7c5cff',
+        borderRadius: '8px',
+        boxShadow: '0 0 0 4px rgba(124,92,255,0.18)',
+        pointerEvents: 'none',
+        zIndex: '2147483646',
+        transition: 'opacity 220ms ease',
+        opacity: '1',
+      });
+      document.documentElement.appendChild(ring);
+      setTimeout(() => {
+        ring.style.opacity = '0';
+        setTimeout(() => ring.remove(), 260);
+      }, 520);
+    } catch {
+      /* highlighting is cosmetic */
+    }
+  }
+
+  function resolveElement(elementId) {
+    const el = elementById.get(Number(elementId));
+    if (!el || !el.isConnected) return null;
+    return el;
+  }
+
+  function humanClick(el) {
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    } catch {
+      /* scrollIntoView is best effort */
+    }
+    highlight(el);
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      button: 0,
+    };
+    const dispatch = (type, extra = {}) => {
+      const Ctor = type.startsWith('pointer') ? window.PointerEvent || window.MouseEvent : window.MouseEvent;
+      try {
+        el.dispatchEvent(new Ctor(type, { ...base, ...extra }));
+      } catch {
+        /* older engines */
+      }
+    };
+    try {
+      el.focus({ preventScroll: true });
+    } catch {
+      /* not focusable */
+    }
+    dispatch('pointerover', { pointerType: 'mouse', isPrimary: true });
+    dispatch('pointerenter', { pointerType: 'mouse', isPrimary: true });
+    dispatch('mousedown', { buttons: 1 });
+    dispatch('mouseup');
+    if (typeof el.click === 'function') {
+      el.click();
+    } else {
+      dispatch('click');
+    }
+  }
+
+  function setNativeValue(el, value) {
+    const proto =
+      el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : el instanceof HTMLInputElement
+          ? HTMLInputElement.prototype
+          : null;
+    const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+    if (descriptor && descriptor.set) descriptor.set.call(el, value);
+    else el.value = value;
+  }
+
+  function focusElement(el) {
+    try {
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      el.focus({ preventScroll: true });
+    } catch {
+      /* ignore */
+    }
+    highlight(el);
+  }
+
+  function typeInto(el, text, { submit = false, clear = true } = {}) {
+    focusElement(el);
+    const tag = el.tagName.toLowerCase();
+
+    if (el.isContentEditable) {
+      if (clear) el.textContent = '';
+      el.textContent = el.textContent + text;
+      el.dispatchEvent(
+        new InputEvent('input', { bubbles: true, cancelable: true, data: text, inputType: 'insertText' }),
+      );
+    } else if (tag === 'select') {
+      el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Unidentified' }));
+      let next = clear ? text : `${el.value || ''}${text}`;
+      if (el.maxLength > 0) next = next.slice(0, el.maxLength);
+      setNativeValue(el, next);
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: next, inputType: 'insertText' }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Unidentified' }));
+    }
+
+    if (submit) {
+      pressKey(el, 'Enter');
+    }
+    return String(el.value ?? el.textContent ?? '').slice(0, 120);
+  }
+
+  function pressKey(target, key) {
+    const el = target || document.activeElement || document.body;
+    const init = { key, code: key, bubbles: true, cancelable: true, composed: true };
+    el.dispatchEvent(new KeyboardEvent('keydown', init));
+    el.dispatchEvent(new KeyboardEvent('keypress', init));
+    el.dispatchEvent(new KeyboardEvent('keyup', init));
+  }
+
+  async function executeAction(action) {
+    if (!action || typeof action !== 'object') {
+      return { ok: false, observation: 'No action was provided.' };
+    }
+
+    switch (action.type) {
+      case 'click': {
+        const el = resolveElement(action.elementId);
+        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer on the page.` };
+        const description = describeElement(el);
+        humanClick(el);
+        await sleep(450);
+        return { ok: true, observation: `Clicked ${description}. Page is now "${document.title}".` };
+      }
+      case 'type': {
+        const el = resolveElement(action.elementId);
+        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer on the page.` };
+        const value = typeInto(el, String(action.text ?? ''), {
+          submit: action.submit === true,
+          clear: action.clear !== false,
+        });
+        await sleep(action.submit ? 700 : 250);
+        return {
+          ok: true,
+          observation: `Typed "${String(action.text ?? '').slice(0, 60)}" into ${describeElement(el)}${
+            action.submit ? ' and pressed Enter' : ''
+          }. Field now contains "${value}".`,
+        };
+      }
+      case 'select': {
+        const el = resolveElement(action.elementId);
+        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer on the page.` };
+        if (el.tagName.toLowerCase() !== 'select') {
+          return { ok: false, observation: `${describeElement(el)} is not a <select> element.` };
+        }
+        const options = Array.from(el.options || []);
+        const wanted = String(action.value ?? '').toLowerCase();
+        const match =
+          options.find((o) => String(o.value).toLowerCase() === wanted) ||
+          options.find((o) => (o.text || '').trim().toLowerCase() === wanted) ||
+          options.find((o) => (o.text || '').toLowerCase().includes(wanted));
+        if (!match) {
+          return {
+            ok: false,
+            observation: `No option matched "${action.value}". Options: ${options
+              .slice(0, 12)
+              .map((o) => o.text.trim())
+              .join(' | ')}`,
+          };
+        }
+        el.value = match.value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        await sleep(250);
+        return { ok: true, observation: `Selected "${match.text.trim()}".` };
+      }
+      case 'key': {
+        pressKey(null, action.key);
+        await sleep(300);
+        return { ok: true, observation: `Pressed ${action.key}.` };
+      }
+      case 'scroll': {
+        const amount = Number(action.amount) || 600;
+        const delta = action.direction === 'up' ? -amount : amount;
+        window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+        await sleep(350);
+        return {
+          ok: true,
+          observation: `Scrolled ${action.direction === 'up' ? 'up' : 'down'} to y=${Math.round(window.scrollY)}.`,
+        };
+      }
+      case 'navigate': {
+        const url = String(action.url || '');
+        let parsed;
+        try {
+          parsed = new URL(url, location.href);
+        } catch {
+          return { ok: false, observation: 'That URL is not valid.' };
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return { ok: false, observation: 'Only http and https URLs can be opened.' };
+        }
+        // Respond before navigating so the caller gets an acknowledgement.
+        setTimeout(() => {
+          location.assign(parsed.toString());
+        }, 60);
+        return { ok: true, observation: `Navigating to ${parsed.host}${parsed.pathname}` };
+      }
+      case 'back': {
+        setTimeout(() => history.back(), 60);
+        return { ok: true, observation: 'Going back to the previous page.' };
+      }
+      case 'wait': {
+        const ms = Math.min(5000, Math.max(100, Number(action.ms) || 600));
+        await sleep(ms);
+        return { ok: true, observation: `Waited ${ms}ms.` };
+      }
+      case 'extract': {
+        let text = '';
+        if (action.elementId !== undefined) {
+          const el = resolveElement(action.elementId);
+          if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer on the page.` };
+          text = (el.innerText || el.textContent || '').trim();
+        } else {
+          text = (document.body?.innerText || '').trim();
+        }
+        return { ok: true, observation: text.replace(/\s+/g, ' ').slice(0, 900) || '(no text)' };
+      }
+      case 'done':
+        return { ok: true, observation: 'Task finished.' };
+      default:
+        return { ok: false, observation: `Unsupported action "${action.type}".` };
+    }
+  }
+
+  /* ---------------------------------------------------------------- HUD -- */
+
+  let hud = null;
+
+  function buildHud() {
+    if (hud) return hud;
+    const host = document.createElement('div');
+    host.setAttribute('data-fta-root', 'hud');
+    Object.assign(host.style, {
+      position: 'fixed',
+      right: '18px',
+      bottom: '18px',
+      zIndex: '2147483647',
+      pointerEvents: 'none',
+    });
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `
+      <style>
+        .pill {
+          pointer-events: auto;
+          display: flex; align-items: center; gap: 10px;
+          font: 500 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+          color: #e9ebf2;
+          background: rgba(14, 16, 23, 0.94);
+          border: 1px solid rgba(255,255,255,0.10);
+          border-radius: 999px;
+          padding: 8px 10px 8px 12px;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+          backdrop-filter: blur(8px);
+        }
+        .spin {
+          width: 12px; height: 12px; border-radius: 50%;
+          border: 2px solid rgba(255,255,255,0.18);
+          border-top-color: #8b7bff;
+          animation: r 0.8s linear infinite;
+        }
+        .done { width: 10px; height: 10px; border-radius: 50%; background: #2fbf71; }
+        .err  { width: 10px; height: 10px; border-radius: 50%; background: #ff6b6b; }
+        .text { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .muted { color: #9aa1b4; }
+        button {
+          pointer-events: auto;
+          font: inherit; color: #d6d9e3;
+          background: rgba(255,255,255,0.07);
+          border: 1px solid rgba(255,255,255,0.10);
+          border-radius: 999px; padding: 4px 10px; cursor: pointer;
+        }
+        button:hover { background: rgba(255,255,255,0.13); }
+        @keyframes r { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+      </style>
+      <div class="pill" role="status" aria-live="polite">
+        <span class="ind"></span>
+        <span class="text"></span>
+        <button type="button" class="stop">Stop</button>
+      </div>
+    `;
+    root.querySelector('.stop').addEventListener('click', () => {
+      try {
+        const pending = chrome.runtime.sendMessage({ type: 'task:stop', source: 'hud' });
+        if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+      } catch {
+        /* extension was reloaded */
+      }
+      updateHud({ running: false, label: 'Stopping…' });
+    });
+    document.documentElement.appendChild(host);
+    hud = { host, root };
+    return hud;
+  }
+
+  function updateHud({ running = true, label = '', step = 0, maxSteps = 0, tone = 'running' }) {
+    const { root, host } = buildHud();
+    host.style.display = '';
+    const indicator = root.querySelector('.ind');
+    // Keep the stable `ind` hook so the next update can find it again.
+    indicator.className = `ind ${running ? 'spin' : tone === 'error' ? 'err' : 'done'}`;
+    root.querySelector('.text').textContent = running
+      ? `Fast Tab Agent${step ? ` · step ${step}${maxSteps ? `/${maxSteps}` : ''}` : ''}`
+      : label || 'Fast Tab Agent';
+    root.querySelector('.stop').style.display = running ? '' : 'none';
+    if (!running && tone !== 'running') {
+      setTimeout(() => {
+        host.style.display = 'none';
+      }, 3600);
+    }
+  }
+
+  function hideHud() {
+    if (hud && hud.host.parentNode) hud.host.parentNode.removeChild(hud.host);
+    hud = null;
+  }
+
+  /* --------------------------------------------------------- messaging -- */
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!message || typeof message.type !== 'string') return false;
+
+    switch (message.type) {
+      case 'fta:ping':
+        sendResponse({ ok: true, url: location.href });
+        return false;
+      case 'fta:snapshot':
+        try {
+          sendResponse({ ok: true, snapshot: snapshot() });
+        } catch (error) {
+          sendResponse({ ok: false, error: error?.message || 'Snapshot failed.' });
+        }
+        return false;
+      case 'fta:execute':
+        executeAction(message.action)
+          .then((result) => sendResponse(result))
+          .catch((error) =>
+            sendResponse({ ok: false, observation: error?.message || 'Action failed.' }),
+          );
+        return true;
+      case 'fta:hud':
+        try {
+          if (message.hide) hideHud();
+          else updateHud(message.state || {});
+        } catch {
+          /* cosmetic */
+        }
+        sendResponse({ ok: true });
+        return false;
+      default:
+        return false;
+    }
+  });
+})();
