@@ -76,6 +76,18 @@ function redirectIsSafe(originalUrl, finalUrl) {
   }
 }
 
+function redactPromptValue(value, secret, depth = 0) {
+  if (depth > 12) return '[content omitted]';
+  if (typeof value === 'string') return redact(value, secret);
+  if (Array.isArray(value)) return value.map((item) => redactPromptValue(item, secret, depth + 1));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactPromptValue(item, secret, depth + 1)]),
+    );
+  }
+  return value;
+}
+
 /** Merge user parameters without letting them replace the agent protocol. */
 function mergeCustomParams(body, params) {
   if (!params || typeof params !== 'object' || Array.isArray(params)) return body;
@@ -174,7 +186,10 @@ export async function chatCompletion(provider, messages, options = {}) {
   }
 
   const headers = buildRequestHeaders(provider);
-  const body = buildRequestBody(provider, messages, options);
+  const safeMessages = Array.isArray(messages)
+    ? messages.map((message) => redactPromptValue(message, provider.apiKey))
+    : messages;
+  const body = buildRequestBody(provider, safeMessages, options);
   const timeoutMs = options.timeoutMs || LIMITS.requestTimeoutMs;
   const dropped = [];
   let lastError = null;
@@ -301,7 +316,10 @@ export async function chatCompletion(provider, messages, options = {}) {
       });
     }
 
-    const { content, finishReason } = extractContent(payload);
+    let { content, finishReason } = extractContent(payload);
+    // A provider or model may echo the configured credential; keep it out of
+    // action payloads, status messages, and task history as a final safeguard.
+    content = redact(content, provider.apiKey);
     if (!content.trim()) {
       throw new ProviderError(
         finishReason === 'content_filter' ? ERROR_CODES.content_filtered : ERROR_CODES.invalid_response,
@@ -457,6 +475,16 @@ export async function testConnection(provider, options = {}) {
  */
 export async function listModels(provider, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw new ProviderError(ERROR_CODES.connection_failed, 'Network access is unavailable.');
+  }
+  const requestCheck = validateProviderForRequest(provider, {
+    allowPrivateHttp: options.allowPrivateHttp === true,
+  });
+  if (!requestCheck.valid) {
+    const [field, message] = Object.entries(requestCheck.errors)[0] || ['config', 'Invalid configuration.'];
+    throw new ProviderError(ERROR_CODES.invalid_config, message, { hint: message, field });
+  }
   let endpoint;
   try {
     endpoint = buildModelsUrl(provider.baseUrl, provider.endpointPath);
@@ -466,6 +494,9 @@ export async function listModels(provider, options = {}) {
   const headers = buildRequestHeaders(provider);
   delete headers['Content-Type'];
   const controller = new AbortController();
+  const abortFromParent = () => controller.abort();
+  if (options.signal?.aborted) controller.abort();
+  else options.signal?.addEventListener?.('abort', abortFromParent, { once: true });
   const timer = setTimeout(() => controller.abort(), options.timeoutMs || LIMITS.testTimeoutMs);
   let response;
   try {
@@ -473,17 +504,29 @@ export async function listModels(provider, options = {}) {
       method: 'GET',
       headers,
       signal: controller.signal,
+      redirect: 'error',
       credentials: 'omit',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
     });
   } catch (error) {
+    if (options.signal?.aborted) {
+      throw new ProviderError(ERROR_CODES.cancelled, 'Cancelled.');
+    }
     throw new ProviderError(
       controller.signal.aborted ? ERROR_CODES.timeout : ERROR_CODES.connection_failed,
-      'Could not reach the models endpoint.',
+      controller.signal.aborted ? 'The models endpoint did not respond in time.' : 'Could not reach the models endpoint.',
+      { providerMessage: redact(error?.message || '', provider.apiKey) },
     );
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener?.('abort', abortFromParent);
+  }
+  if (!redirectIsSafe(endpoint, response.url)) {
+    throw new ProviderError(
+      ERROR_CODES.unexpected_redirect,
+      'The models endpoint redirected to a different host. The request was not sent there.',
+    );
   }
   const text = await response.text().catch(() => '');
   let payload = null;
@@ -494,6 +537,9 @@ export async function listModels(provider, options = {}) {
   }
   if (!response.ok) {
     throw classifyHttpError(response.status, payload, text, { secret: provider.apiKey });
+  }
+  if (!payload || typeof payload !== 'object') {
+    throw new ProviderError(ERROR_CODES.invalid_response, 'The models endpoint did not return JSON.');
   }
   const entries = Array.isArray(payload?.data)
     ? payload.data

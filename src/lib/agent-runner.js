@@ -103,6 +103,7 @@ export async function runAgentTask(params) {
     let parsed = null;
     try {
       const result = await callModel(messages, { signal });
+      if (isCancelled()) return { status: 'stopped', steps, answer, plan };
       replyText = result?.content || '';
       parsed = parseAgentReply(replyText, snapshot);
     } catch (error) {
@@ -127,6 +128,7 @@ export async function runAgentTask(params) {
           ],
           { signal },
         );
+        if (isCancelled()) return { status: 'stopped', steps, answer, plan };
         replyText = repaired?.content || '';
         parsed = parseAgentReply(replyText, snapshot);
       } catch (error) {

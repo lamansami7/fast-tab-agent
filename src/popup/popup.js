@@ -49,6 +49,7 @@ const state = {
   view: 'main',
   providers: [],
   activeId: null,
+  permissionOrigins: new Set(),
   settings: { maxSteps: 8, showHud: true, jsonMode: false, allowPrivateHttp: false },
   tab: null,
   task: null,
@@ -86,6 +87,13 @@ async function send(type, payload = {}, options = {}) {
         error.code = response.error?.code;
         error.hint = response.error?.hint;
         error.field = response.error?.field;
+        if (error.code === 'host_permission_required') {
+          const provider = payload.provider ||
+            (payload.id ? state.providers.find((item) => item.id === payload.id) : null) ||
+            activeProvider();
+          const origin = permissionPattern(provider);
+          if (origin) state.permissionOrigins.delete(origin);
+        }
         throw error;
       }
       return response.data;
@@ -166,6 +174,46 @@ function hostOf(provider) {
 
 function activeProvider() {
   return state.providers.find((p) => p.id === state.activeId) || null;
+}
+
+function permissionPattern(provider) {
+  try {
+    const url = new URL(provider?.baseUrl || '');
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return `${url.protocol}//${url.hostname}/*`;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshPermissionGrants(providers = state.providers) {
+  if (!chrome.permissions?.contains) return;
+  const origins = new Set(providers.map(permissionPattern).filter(Boolean));
+  const granted = new Set();
+  for (const origin of origins) {
+    try {
+      if (await chrome.permissions.contains({ origins: [origin] })) granted.add(origin);
+    } catch {
+      /* permission status is informational; the worker checks again before fetch */
+    }
+  }
+  state.permissionOrigins = granted;
+}
+
+async function ensureEndpointPermission(provider) {
+  const origin = permissionPattern(provider);
+  if (!origin) throw new Error('Enter a valid HTTP(S) endpoint before connecting.');
+  if (state.permissionOrigins.has(origin)) return;
+  if (!chrome.permissions?.request) {
+    throw new Error('Chrome endpoint permission support is unavailable. Reload the extension and try again.');
+  }
+  // Called directly from Test, Fetch models, or Run button handlers so Chrome's
+  // permission prompt is tied to an explicit user action.
+  const granted = await chrome.permissions.request({ origins: [origin] });
+  if (!granted) {
+    throw new Error(`Permission to contact ${new URL(provider.baseUrl).host} was not granted.`);
+  }
+  state.permissionOrigins.add(origin);
 }
 
 function isRunnable(provider) {
@@ -822,6 +870,7 @@ async function testProviderConnection() {
   button.textContent = 'Testing…';
 
   try {
+    await ensureEndpointPermission(state.draft);
     const result = await send('providers:test', {
       provider: {
         ...state.draft,
@@ -863,6 +912,7 @@ async function fetchModels() {
   button.textContent = 'Loading…';
 
   try {
+    await ensureEndpointPermission(state.draft);
     const data = await send('providers:models', {
       provider: {
         ...state.draft,
@@ -1033,6 +1083,8 @@ async function startTask() {
   delete hint.dataset.tone;
 
   try {
+    const provider = activeProvider();
+    if (provider) await ensureEndpointPermission(provider);
     const task = await send('task:start', { goal });
     state.task = task;
     renderTask();
@@ -1087,6 +1139,7 @@ async function refreshProviders() {
     const data = await send('providers:list');
     state.providers = data.providers || [];
     state.activeId = data.activeId || state.providers[0]?.id || null;
+    await refreshPermissionGrants(state.providers);
     renderProviderList();
     renderChip();
   } catch (error) {
@@ -1181,6 +1234,21 @@ function bindEvents() {
 
   $('#testBtn').addEventListener('click', testProviderConnection);
   $('#fetchModelsBtn').addEventListener('click', fetchModels);
+  $('#forgetEndpointPermission').addEventListener('click', async () => {
+    const provider = state.draft;
+    const origin = permissionPattern(provider);
+    if (!origin || !chrome.permissions?.remove) {
+      toast('This endpoint does not have removable HTTP(S) host access.', 'warn');
+      return;
+    }
+    try {
+      const removed = await chrome.permissions.remove({ origins: [origin] });
+      state.permissionOrigins.delete(origin);
+      toast(removed ? `Access to ${new URL(provider.baseUrl).host} was removed.` : 'No permission grant was found.');
+    } catch {
+      toast('Chrome could not remove this host permission.', 'error');
+    }
+  });
   $('#fModel').addEventListener('input', () => {
     $('#modelList').hidden = true;
   });

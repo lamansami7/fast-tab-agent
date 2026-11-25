@@ -25,23 +25,37 @@ import { DEFAULT_SETTINGS, LIMITS, STORAGE_KEYS, TASK_STORAGE_KEY, TASK_STATUS }
 import { ERROR_CODES, ProviderError, friendlyError } from './lib/errors.js';
 import { runAgentTask } from './lib/agent-runner.js';
 
-// Provider records (including API keys) must not be readable by content
-// scripts. Only extension pages and this worker keep storage access.
-try {
-  chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' });
-  chrome.storage.session?.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' });
-} catch {
-  /* older Chrome builds: storage is still isolated from page scripts */
-}
-
+// chrome.storage.local is readable by untrusted contexts by default on some
+// Chrome versions. Fail closed unless API-key storage is restricted before any
+// provider record is read or any page agent is injected.
 const store = createProviderStore(chrome.storage.local);
 let initPromise = null;
+let storageAccessPromise = null;
+
+function lockStorageAccess() {
+  if (!storageAccessPromise) {
+    storageAccessPromise = (async () => {
+      if (typeof chrome.storage.local.setAccessLevel !== 'function') {
+        throw new Error('Secure extension storage access is unavailable in this Chrome version.');
+      }
+      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+      if (chrome.storage.session?.setAccessLevel) {
+        await chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+      }
+    })();
+  }
+  return storageAccessPromise;
+}
 
 function ensureInit() {
   if (!initPromise) {
-    initPromise = store.ensureInitialised().catch((error) => {
-      console.warn('Fast Tab Agent: provider store init failed', error?.message || error);
-    });
+    initPromise = lockStorageAccess()
+      .then(() => store.ensureInitialised())
+      .catch((error) => {
+        initPromise = null;
+        console.warn('Fast Tab Agent: secure provider store initialization failed.');
+        throw error;
+      });
   }
   return initPromise;
 }
@@ -95,29 +109,29 @@ async function saveSettings(patch) {
  *                limitReached:boolean, phase:string}} */
 let currentTask = null;
 let abortController = null;
-let keepAliveTimer = null;
-
-function startKeepAlive() {
-  if (keepAliveTimer) return;
-  // MV3 workers idle out after ~30s without extension API traffic. A running
-  // task touches storage/messaging frequently, and this heartbeat covers the
-  // gaps while a long model response is in flight.
-  keepAliveTimer = setInterval(() => {
-    try {
-      chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError);
-    } catch {
-      /* ignore */
-    }
-  }, 20_000);
-}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function stopKeepAlive() {
-  if (keepAliveTimer) {
-    clearInterval(keepAliveTimer);
-    keepAliveTimer = null;
+/** Convert a validated endpoint to the narrowest Chrome origin grant we can ask for. */
+function providerOriginPattern(provider, allowPrivateHttp) {
+  const checked = validateProvider(provider, { allowPrivateHttp });
+  if (!checked.urlCheck?.ok) {
+    throw new ProviderError(ERROR_CODES.invalid_config, checked.urlCheck?.message || 'Invalid endpoint.');
   }
+  const url = checked.urlCheck.url;
+  return `${url.protocol}//${url.hostname}/*`;
+}
+
+async function requireProviderHostPermission(provider, allowPrivateHttp) {
+  const origin = providerOriginPattern(provider, allowPrivateHttp);
+  if (!chrome.permissions?.contains || !(await chrome.permissions.contains({ origins: [origin] }))) {
+    throw new ProviderError(
+      'host_permission_required',
+      `Allow Fast Tab Agent to contact ${new URL(provider.baseUrl).host}. Grant access in the popup and try again.`,
+      { hint: 'Chrome asks for access only when you test or use this endpoint.' },
+    );
+  }
+  return origin;
 }
 
 function publicTask(task = currentTask) {
@@ -286,7 +300,7 @@ async function executeActionOnTab(tabId, action) {
 
 /* ---------------------------------------------------------- task engine -- */
 
-function finishTask(outcome) {
+async function finishTask(outcome) {
   if (!currentTask) return;
   currentTask.status =
     outcome.status === 'done'
@@ -305,7 +319,6 @@ function finishTask(outcome) {
   if (!currentTask.steps.length && Array.isArray(outcome.steps)) currentTask.steps = outcome.steps;
 
   abortController = null;
-  stopKeepAlive();
   const tabId = currentTask.tabId;
 
   if (tabId) {
@@ -319,13 +332,16 @@ function finishTask(outcome) {
   }
 
   broadcast(currentTask);
-  persistTask();
+  await persistTask();
 }
 
 async function startTask(goalInput) {
   if (currentTask && currentTask.status === TASK_STATUS.running) {
     throw new Error('A task is already running. Stop it first.');
   }
+  // If this worker was restarted, recover an orphaned in-session task record
+  // before a new run overwrites it. Tasks are not resumed automatically.
+  await taskState();
 
   const goal = String(goalInput || '').trim().slice(0, LIMITS.maxTaskGoal);
   if (!goal) throw new Error('Describe what the agent should do on this page.');
@@ -342,6 +358,8 @@ async function startTask(goalInput) {
     const [field, message] = Object.entries(check.errors)[0] || ['config', 'Finish configuring this provider.'];
     throw new ProviderError(ERROR_CODES.invalid_config, message, { field });
   }
+
+  await requireProviderHostPermission(provider, settings.allowPrivateHttp);
 
   const tab = await getActiveTab();
   if (!tab || typeof tab.id !== 'number') throw new Error('No active tab found.');
@@ -367,7 +385,6 @@ async function startTask(goalInput) {
     limitReached: false,
   };
   abortController = new AbortController();
-  startKeepAlive();
   broadcast(currentTask);
   persistTask();
   sendHud(tab.id, { running: true, step: 0, maxSteps: settings.maxSteps });
@@ -390,7 +407,7 @@ async function startTask(goalInput) {
   };
 
   const onEvent = (event) => {
-    if (!currentTask || currentTask.id !== taskId) return;
+    if (!currentTask || currentTask.id !== taskId || currentTask.status !== TASK_STATUS.running) return;
     switch (event.phase) {
       case 'start':
         currentTask.phase = 'thinking';
@@ -427,11 +444,11 @@ async function startTask(goalInput) {
         onEvent,
         signal: controller.signal,
       });
-      if (!currentTask || currentTask.id !== taskId) return;
-      finishTask(outcome);
+      if (!currentTask || currentTask.id !== taskId || currentTask.status !== TASK_STATUS.running) return;
+      await finishTask(outcome);
     } catch (error) {
-      if (!currentTask || currentTask.id !== taskId) return;
-      finishTask({
+      if (!currentTask || currentTask.id !== taskId || currentTask.status !== TASK_STATUS.running) return;
+      await finishTask({
         status: 'error',
         error: friendlyError(error),
         steps: currentTask.steps,
@@ -541,6 +558,7 @@ async function resolveProvider(input) {
 async function providerTest(message) {
   const provider = await resolveProvider(message.provider ?? message.id ?? null);
   const settings = await getSettings();
+  await requireProviderHostPermission(provider, settings.allowPrivateHttp);
   const result = await testConnection(provider, {
     fetchImpl: fetch,
     allowPrivateHttp: settings.allowPrivateHttp,
@@ -553,7 +571,9 @@ async function providerTest(message) {
 
 async function providerModels(message) {
   const provider = await resolveProvider(message.provider ?? message.id ?? null);
-  return listModels(provider, { fetchImpl: fetch });
+  const settings = await getSettings();
+  await requireProviderHostPermission(provider, settings.allowPrivateHttp);
+  return listModels(provider, { fetchImpl: fetch, allowPrivateHttp: settings.allowPrivateHttp });
 }
 
 /* ---------------------------------------------------------------- router -- */
@@ -616,8 +636,20 @@ const handlers = {
   'app:info': () => appInfo(),
 };
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+function isPopupSender(sender) {
+  if (sender?.id !== chrome.runtime.id || typeof sender.url !== 'string') return false;
+  const popupUrl = chrome.runtime.getURL('src/popup/popup.html');
+  return sender.url === popupUrl;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
+  // Provider records (and especially keys) are returned only to the popup.
+  // The injected page agent may request task cancellation for its own tab, but
+  // it cannot call provider/settings/task-start APIs.
+  const hudStop = message.type === 'task:stop' && message.source === 'hud' &&
+    sender?.id === chrome.runtime.id && sender?.tab?.id === currentTask?.tabId;
+  if (!isPopupSender(sender) && !hudStop) return false;
   const handler = handlers[message.type];
   if (!handler) return false;
 
@@ -635,17 +667,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  ensureInit().then(async () => {
-    const settings = await chrome.storage.local.get(STORAGE_KEYS.settings);
-    if (!settings?.[STORAGE_KEYS.settings]) {
-      await chrome.storage.local.set({ [STORAGE_KEYS.settings]: { ...DEFAULT_SETTINGS } });
-    }
-  });
+  ensureInit()
+    .then(async () => {
+      const settings = await chrome.storage.local.get(STORAGE_KEYS.settings);
+      if (!settings?.[STORAGE_KEYS.settings]) {
+        await chrome.storage.local.set({ [STORAGE_KEYS.settings]: { ...DEFAULT_SETTINGS } });
+      }
+    })
+    .catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  ensureInit();
+  void ensureInit().catch(() => {});
 });
 
 // Warm the store as soon as the worker starts so the first popup render is fast.
-ensureInit();
+void ensureInit().catch(() => {});

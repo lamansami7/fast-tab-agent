@@ -21,6 +21,7 @@ export function createStorageArea(initial = {}) {
     async clear() {
       for (const key of Object.keys(data)) delete data[key];
     },
+    async setAccessLevel() {},
     dump() {
       return structuredClone(data);
     },
@@ -92,6 +93,7 @@ export function makeSnapshot() {
       { id: 1, tag: 'button', label: 'Sign in', inViewport: true },
       { id: 2, tag: 'input', type: 'search', label: 'Search', inViewport: true },
       { id: 3, tag: 'a', label: 'Checkout', href: '/checkout', inViewport: false },
+      { id: 4, tag: 'select', label: 'Size', inViewport: true },
     ],
     headings: ['Your cart'],
     text: 'Your cart is empty. Continue shopping.',

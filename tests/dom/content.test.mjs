@@ -30,8 +30,12 @@ if (JSDOM) {
         <form>
           <label for="q">Search shoes</label>
           <input id="q" type="search" placeholder="Search products">
+          <input id="password" type="password" value="super-secret">
+          <input id="email" type="email" value="person@example.com" autocomplete="email">
           <button id="go" type="button">Search now</button>
         </form>
+        <button id="disabled" type="button" disabled>Disabled control</button>
+        <button id="delete" type="button">Delete account</button>
         <a id="link" href="/cart">Cart</a>
         <select id="size"><option value="s">Small</option><option value="l">Large</option></select>
         <button id="hidden" style="display:none">Hidden button</button>
@@ -66,6 +70,12 @@ if (JSDOM) {
     Object.defineProperty(window, 'innerWidth', { get: () => 1200, configurable: true });
 
     const sent = [];
+    let confirmNext = false;
+    const confirmationMessages = [];
+    window.confirm = (message) => {
+      confirmationMessages.push(message);
+      return confirmNext;
+    };
     window.chrome = {
       runtime: {
         id: 'test-ext',
@@ -124,6 +134,11 @@ if (JSDOM) {
     assert.ok(snapshot.elements.some((element) => element.placeholder === 'Notes'));
     assert.equal(snapshot.elements.some((element) => element.label === 'Hidden button'), false);
     assert.equal(snapshot.elements.some((element) => element.label === 'Aria hidden'), false);
+    assert.equal(snapshot.elements.some((element) => element.type === 'password'), false);
+    const emailField = snapshot.elements.find((element) => element.type === 'email');
+    assert.ok(emailField?.sensitive);
+    assert.equal(emailField.value, undefined);
+    assert.equal(snapshot.text.includes('super-secret'), false);
     for (const element of snapshot.elements) assert.equal(typeof element.id, 'number');
     assert.ok(snapshot.headings.includes('Shop for shoes'));
     assert.ok(snapshot.iframes.some((frame) => frame.title === 'Payment frame'));
@@ -145,6 +160,26 @@ if (JSDOM) {
     assert.equal(clickResult.ok, true);
     assert.equal(clicks, 1);
     assert.match(clickResult.observation, /Clicked/);
+
+    const disabledId = byLabel('Disabled control').id;
+    const disabledResult = await send({
+      type: 'fta:execute',
+      action: { type: 'click', elementId: disabledId },
+    });
+    assert.equal(disabledResult.ok, false);
+    assert.match(disabledResult.observation, /disabled/i);
+
+    let deleteClicks = 0;
+    window.document.getElementById('delete').addEventListener('click', () => { deleteClicks += 1; });
+    const deleteId = byLabel('Delete account').id;
+    const cancelledDelete = await send({ type: 'fta:execute', action: { type: 'click', elementId: deleteId } });
+    assert.equal(cancelledDelete.ok, false);
+    assert.equal(deleteClicks, 0, 'declining confirmation prevents the destructive click');
+    assert.match(confirmationMessages.at(-1), /Delete account/);
+    confirmNext = true;
+    const confirmedDelete = await send({ type: 'fta:execute', action: { type: 'click', elementId: deleteId } });
+    assert.equal(confirmedDelete.ok, true);
+    assert.equal(deleteClicks, 1);
 
     // 4. typing (framework-friendly events, append mode, submit)
     let inputEvents = 0;
@@ -200,7 +235,7 @@ if (JSDOM) {
 
     const missing = await send({ type: 'fta:execute', action: { type: 'click', elementId: 99999 } });
     assert.equal(missing.ok, false);
-    assert.match(missing.observation, /no longer on the page/);
+    assert.match(missing.observation, /no longer visible on the page/);
 
     // 9. HUD updates repeatedly (regression: indicator class must stay stable)
     await send({ type: 'fta:hud', state: { running: true, step: 2, maxSteps: 8 } });

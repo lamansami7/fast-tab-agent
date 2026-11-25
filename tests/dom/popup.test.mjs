@@ -131,7 +131,22 @@ if (JSDOM) {
     };
 
     const listeners = [];
+    const grantedOrigins = new Set(['https://api.groq.com/*']);
+    const requestedOrigins = [];
     globalThis.chrome = {
+      permissions: {
+        contains: async ({ origins }) => origins.every((origin) => grantedOrigins.has(origin)),
+        request: async ({ origins }) => {
+          requestedOrigins.push(...origins);
+          origins.forEach((origin) => grantedOrigins.add(origin));
+          return true;
+        },
+        remove: async ({ origins }) => {
+          const hadPermission = origins.some((origin) => grantedOrigins.has(origin));
+          origins.forEach((origin) => grantedOrigins.delete(origin));
+          return hadPermission;
+        },
+      },
       runtime: {
         id: 'test',
         sendMessage: async (message) => {
@@ -215,6 +230,7 @@ if (JSDOM) {
     assert.match($('#testResult').textContent, /Connection successful/);
     assert.equal($('#testResult').dataset.tone, 'success');
     assert.match($('#testResult').textContent, /412 ms/);
+    assert.deepEqual(requestedOrigins, ['https://api.openai.com/*']);
 
     // 6. advanced + optional model discovery
     assert.ok($('#advancedBody').hidden);

@@ -25,5 +25,5 @@
     "128": "icons/icon128.png"
   },
   "permissions": ["storage", "scripting", "activeTab"],
-  "host_permissions": ["<all_urls>"]
+  "optional_host_permissions": ["http://*/*", "https://*/*"]
 }

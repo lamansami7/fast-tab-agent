@@ -54,19 +54,20 @@
 
   function isVisible(el) {
     if (!(el instanceof Element)) return false;
-    if (el.getAttribute('aria-hidden') === 'true') return false;
-    let style;
-    try {
-      style = window.getComputedStyle(el);
-    } catch {
-      return false;
+    for (let node = el; node && node instanceof Element; node = node.parentElement) {
+      if (node.getAttribute('aria-hidden') === 'true' || node.hasAttribute('inert') || node.hidden) return false;
+      let style;
+      try {
+        style = window.getComputedStyle(node);
+      } catch {
+        return false;
+      }
+      if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
+      if (style.opacity !== '' && Number(style.opacity) === 0) return false;
     }
-    if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
-    if (style.opacity !== '' && Number(style.opacity) === 0) return false;
     if (el.getAttribute('aria-modal') === 'false') return false;
     const rect = el.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return false;
-    return true;
+    return rect.width >= 2 && rect.height >= 2;
   }
 
   function inViewport(rect) {
@@ -78,7 +79,19 @@
     );
   }
 
-  const TEXT_INPUT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'password', 'number']);
+  const TEXT_INPUT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'number']);
+  const SENSITIVE_FIELD_RE = /password|passcode|one.?time|verification|auth(?:entication)?|secret|token|credit.?card|card.?number|cvc|cvv|security.?code|ssn|social.?security|bank.?account|account.?number|date.?of.?birth|birth.?date|email|phone|address/i;
+  const HIGH_IMPACT_RE = /\b(buy|purchase|pay|checkout|place order|submit order|delete|remove|send|publish|post|transfer|withdraw|book|booking|reservation|subscribe|unsubscribe|cancel (?:order|booking|reservation|subscription)|sign out|log out|reset)\b/i;
+
+  function isSensitiveField(el) {
+    if (el instanceof HTMLInputElement && el.type.toLowerCase() === 'password') return true;
+    const autocomplete = el.getAttribute('autocomplete') || '';
+    const metadata = [
+      el.getAttribute('name'), el.id, el.getAttribute('aria-label'),
+      el.getAttribute('placeholder'), autocomplete,
+    ].filter(Boolean).join(' ');
+    return SENSITIVE_FIELD_RE.test(metadata);
+  }
 
   function elementLabel(el) {
     const aria = el.getAttribute('aria-label');
@@ -153,6 +166,11 @@
   }
 
   function snapshot() {
+    // Release detached dynamic-page nodes; otherwise each re-render would keep
+    // old DOM subtrees alive for the lifetime of this content-script document.
+    for (const [id, element] of elementById) {
+      if (!element.isConnected) elementById.delete(id);
+    }
     const nodes = document.querySelectorAll(SELECTOR);
     const collected = new Set();
     const entries = [];
@@ -163,6 +181,8 @@
       // Content hidden from assistive tech (or inert) is not actionable.
       if (el.closest('[aria-hidden="true"]')) continue;
       if (el.closest('[inert]')) continue;
+      // Password controls are not exposed to the model at all.
+      if (el instanceof HTMLInputElement && el.type.toLowerCase() === 'password') continue;
       if (!isMeaningful(el)) continue;
       if (!isVisible(el)) continue;
       if (isNestedInInteractive(el, collected)) continue;
@@ -180,12 +200,14 @@
         label: elementLabel(el).replace(/\s+/g, ' ').trim().slice(0, 160) || undefined,
         placeholder: el.getAttribute('placeholder') || undefined,
         value:
-          tag === 'input' || tag === 'textarea' || tag === 'select'
+          (tag === 'input' || tag === 'textarea' || tag === 'select') && !isSensitiveField(el)
             ? String(el.value ?? '').slice(0, 80)
             : undefined,
+        sensitive: isSensitiveField(el) || undefined,
         href: tag === 'a' ? String(el.getAttribute('href') || '').slice(0, 300) : undefined,
         checked: el.checked === true ? true : undefined,
         disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true' ? true : undefined,
+        contenteditable: el.isContentEditable || undefined,
         inViewport: inViewport(rect),
       };
       // Drop empty synthetic fields to keep the prompt small.
@@ -275,8 +297,45 @@
 
   function resolveElement(elementId) {
     const el = elementById.get(Number(elementId));
-    if (!el || !el.isConnected) return null;
+    if (!el || !el.isConnected || !isVisible(el)) return null;
     return el;
+  }
+
+  function isDisabled(el) {
+    return Boolean(
+      el.disabled === true ||
+      el.getAttribute('aria-disabled') === 'true' ||
+      el.closest('fieldset[disabled]'),
+    );
+  }
+
+  function isSafeLink(el) {
+    if (!(el instanceof HTMLAnchorElement)) return true;
+    const href = el.getAttribute('href');
+    if (!href || href.startsWith('#')) return true;
+    try {
+      const url = new URL(href, location.href);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  function hasHighImpactContext(el) {
+    const description = `${elementLabel(el)} ${el.getAttribute('name') || ''} ${el.getAttribute('aria-label') || ''}`;
+    if (HIGH_IMPACT_RE.test(description)) return true;
+    const form = el.closest('form');
+    if (!form) return false;
+    const formText = `${form.innerText || form.textContent || ''} ${form.getAttribute('action') || ''}`;
+    return HIGH_IMPACT_RE.test(formText.slice(0, 2000));
+  }
+
+  function confirmHighImpact(description) {
+    try {
+      return window.confirm(`Fast Tab Agent is about to ${description}. Continue?`);
+    } catch {
+      return false;
+    }
   }
 
   function humanClick(el) {
@@ -390,7 +449,15 @@
     switch (action.type) {
       case 'click': {
         const el = resolveElement(action.elementId);
-        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer on the page.` };
+        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer visible on the page.` };
+        if (isDisabled(el)) return { ok: false, observation: `${describeElement(el)} is disabled.` };
+        if (el instanceof HTMLInputElement && el.type.toLowerCase() === 'file') {
+          return { ok: false, observation: 'File-upload controls cannot be operated by the agent.' };
+        }
+        if (!isSafeLink(el)) return { ok: false, observation: 'Links using non-http(s) schemes cannot be opened.' };
+        if (hasHighImpactContext(el) && !confirmHighImpact(`activate ${describeElement(el)}`)) {
+          return { ok: false, observation: `User confirmation was not granted for ${describeElement(el)}; no action was taken.` };
+        }
         const description = describeElement(el);
         humanClick(el);
         await sleep(450);
@@ -398,25 +465,35 @@
       }
       case 'type': {
         const el = resolveElement(action.elementId);
-        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer on the page.` };
+        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer visible on the page.` };
+        const tag = el.tagName.toLowerCase();
+        if (isDisabled(el) || el.readOnly) return { ok: false, observation: `${describeElement(el)} cannot be edited.` };
+        if ((tag !== 'input' && tag !== 'textarea' && !el.isContentEditable) ||
+            (tag === 'input' && (!TEXT_INPUT_TYPES.has((el.type || 'text').toLowerCase()) || el.type === 'password')) ||
+            isSensitiveField(el) && tag === 'input' && el.type === 'password') {
+          return { ok: false, observation: `${describeElement(el)} is not a supported text field.` };
+        }
+        if (action.submit === true && hasHighImpactContext(el) && !confirmHighImpact('submit this form')) {
+          return { ok: false, observation: 'User confirmation was not granted; the form was not submitted.' };
+        }
         const value = typeInto(el, String(action.text ?? ''), {
           submit: action.submit === true,
           clear: action.clear !== false,
         });
         await sleep(action.submit ? 700 : 250);
+        const safeValue = isSensitiveField(el) ? '[value hidden]' : `"${value}"`;
         return {
           ok: true,
-          observation: `Typed "${String(action.text ?? '').slice(0, 60)}" into ${describeElement(el)}${
-            action.submit ? ' and pressed Enter' : ''
-          }. Field now contains "${value}".`,
+          observation: `Typed into ${describeElement(el)}${action.submit ? ' and pressed Enter' : ''}. Field now contains ${safeValue}.`,
         };
       }
       case 'select': {
         const el = resolveElement(action.elementId);
-        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer on the page.` };
+        if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer visible on the page.` };
         if (el.tagName.toLowerCase() !== 'select') {
           return { ok: false, observation: `${describeElement(el)} is not a <select> element.` };
         }
+        if (isDisabled(el)) return { ok: false, observation: `${describeElement(el)} is disabled.` };
         const options = Array.from(el.options || []);
         const wanted = String(action.value ?? '').toLowerCase();
         const match =
@@ -439,6 +516,21 @@
         return { ok: true, observation: `Selected "${match.text.trim()}".` };
       }
       case 'key': {
+        const active = document.activeElement;
+        if (active instanceof HTMLInputElement && active.type.toLowerCase() === 'password') {
+          return { ok: false, observation: 'Keyboard actions are blocked while a password field is focused.' };
+        }
+        if ((action.key === 'Delete' || action.key === 'Backspace') &&
+            !(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active?.isContentEditable)) {
+          return { ok: false, observation: 'Delete and Backspace are restricted to editable fields.' };
+        }
+        if (action.key === 'Enter' && active && !isSafeLink(active)) {
+          return { ok: false, observation: 'Links using non-http(s) schemes cannot be activated.' };
+        }
+        if (action.key === 'Enter' && active && hasHighImpactContext(active) &&
+            !confirmHighImpact(`activate ${describeElement(active)}`)) {
+          return { ok: false, observation: 'User confirmation was not granted; the action was not activated.' };
+        }
         pressKey(null, action.key);
         await sleep(300);
         return { ok: true, observation: `Pressed ${action.key}.` };

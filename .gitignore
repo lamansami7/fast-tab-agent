@@ -1,6 +1,5 @@
 # Dependencies (dev/test only — the extension itself has none)
 node_modules/
-package-lock.json
 
 # Editor / OS noise
 .DS_Store
