@@ -32,6 +32,7 @@ import {
 import { ERROR_CODES, ProviderError, friendlyError } from './lib/errors.js';
 import { runAgentTask } from './lib/agent-runner.js';
 import {
+  chooseInitialTabId,
   classifyTabUrl,
   originPatternFor,
   tabHost,
@@ -425,7 +426,10 @@ async function tabsList() {
 
   return {
     tabs: list,
-    activeTabId: active?.id ?? null,
+    // The popup uses activeTabId as its initial selection. If the real active
+    // tab is a chrome:// page the agent can never read, offer the first usable
+    // website tab instead of pointing the composer at a dead end.
+    activeTabId: chooseInitialTabId(list, active?.id ?? null),
     total: tabs.length,
     truncated: tabs.length > list.length,
     hasTabsPermission,
@@ -574,6 +578,14 @@ async function startTask(goalInput, requestedTabId) {
 
     await requireProviderHostPermission(provider, settings.allowPrivateHttp);
     tab = await resolveTargetTab(requestedTabId);
+    // Bring the chosen tab to the front so the user can watch the agent work
+    // and so background-tab throttling cannot stall clicks, typing or focus.
+    try {
+      const active = await getActiveTab();
+      if (active?.id !== tab.id) await chrome.tabs.update?.(tab.id, { active: true });
+    } catch {
+      /* the task can still run in a background tab */
+    }
     await ensureInjected(tab.id);
 
     const metadata = taskTabMetadata(tab);
