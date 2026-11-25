@@ -38,6 +38,20 @@ import {
   tabTitleFor,
 } from './lib/tabs.js';
 
+// The toolbar button opens Chrome's side panel rather than a popup. A popup is
+// destroyed as soon as the user clicks the page, which makes it impossible to
+// watch a task while interacting with the tab it is working on.
+const sidePanel = chrome.sidePanel;
+if (sidePanel?.setPanelBehavior) {
+  sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+}
+if (chrome.action?.onClicked) {
+  chrome.action.onClicked.addListener((tab) => {
+    if (!sidePanel?.open || !tab?.windowId) return;
+    sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+  });
+}
+
 // chrome.storage.local is readable by untrusted contexts by default on some
 // Chrome versions. Fail closed unless API-key storage is restricted before any
 // provider record is read or any page agent is injected.

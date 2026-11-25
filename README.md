@@ -4,11 +4,11 @@ Fast Tab Agent is a Manifest V3 Chrome extension that turns the tab you choose i
 
 AI requests and provider credentials stay in the extension service worker. The page agent receives a sanitized snapshot and validated actions — never provider records or API keys.
 
-**Version 1.1** is a chat-first redesign with real tab access, per-site permissions, live progress, reliable cancellation, light/dark themes and a persistent conversation.
+**Version 1.2** runs in Chrome's side panel, so it stays open while you click around the page it is working on. It adds real tab access, per-site permissions, live progress, reliable cancellation, light/dark themes and a persistent conversation.
 
 ## What it does
 
-- **Chat with the page.** A conversation view with clear user/assistant messages, timestamps, live task status, action history and actionable errors. Conversations survive closing the popup and can be cleared from Settings.
+- **Chat with the page.** A conversation view with clear user/assistant messages, timestamps, live task status, action history and actionable errors. Conversations survive closing the panel and can be cleared from Settings.
 - **Choose the tab.** A tab picker lists open tabs with title, domain, favicon/initial, active/selected state and a permission badge. Search, refresh, select another tab, or grant access to it. Restricted pages explain why they cannot be used.
 - **Read the page.** Visible text, headings, links and interactive controls are extracted into a bounded snapshot. The agent can summarize, answer questions, find sections, forms and links.
 - **Act on the page.** Click, type, select, press allowlisted keys, scroll, navigate, go back, wait, extract text or finish. Targets are rechecked before every action and the page is re-read afterwards.
@@ -22,7 +22,7 @@ The extension does not execute JavaScript returned by a model and never exposes 
 1. Clone or download this repository.
 2. Open `chrome://extensions` and enable **Developer mode**.
 3. Select **Load unpacked** and choose the directory containing `manifest.json`.
-4. Pin Fast Tab Agent to the toolbar if you want quick access.
+4. Pin Fast Tab Agent to the toolbar. Clicking its icon opens the side panel, which stays open while you use the page. Drag the panel's inner edge to make it wider.
 
 Chrome 116 or newer is required. There is no build step and no production dependencies.
 
@@ -30,7 +30,7 @@ Chrome 116 or newer is required. There is no build step and no production depend
 
 1. Edit the files.
 2. Open `chrome://extensions`, find Fast Tab Agent, and press the reload icon.
-3. Close and reopen the popup. If a task was running, it is marked interrupted; start it again.
+3. Reopen the side panel. If a task was running, it is marked interrupted; start it again.
 4. If you changed the content script, also reload the test page (press F5) so the new content script is injected.
 
 ## The interface
@@ -66,7 +66,7 @@ Light and dark themes follow the operating system by default. Focus rings, label
 
 ### The selected tab
 
-The popup shows the active tab when it opens. The agent works only on the **currently selected tab**, and only after you send a request. Nothing reads page content in the background, and switching the picker does not read the new tab until you run a task.
+The panel follows the active tab, so switching tabs updates the tab bar without closing it. The agent works only on the **tab shown in the bar**, and only after you send a request. Nothing reads page content in the background, and switching the picker does not read the new tab until you run a task.
 
 For the active tab, the extension relies on `activeTab` (temporary access granted when you open the extension) plus `scripting` for on-demand injection. If you select a different tab, Chrome asks for access to that tab's exact site. Denying the request leaves the previous selection in place.
 
@@ -253,12 +253,13 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 ### 1. Load the unpacked extension
 
 - [ ] Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, select this repository.
-- [ ] The card shows Fast Tab Agent 1.1.0 with no errors. Click **Errors** if present.
-- [ ] Pin the extension. Open the popup: the header, tab bar and empty state render, with no console errors in the popup's DevTools.
+- [ ] The card shows Fast Tab Agent 1.2.0 with no errors. Click **Errors** if present.
+- [ ] Pin the extension and click its icon: the side panel opens (no popup) with the header, tab bar and empty state, and no console errors in the panel's DevTools.
+- [ ] Click on the page while the panel is open: the panel stays open. Switch tabs: the tab bar follows the new active tab.
 
 ### 2. Reload after code changes
 
-- [ ] Change a visible string, press reload on the extension card, then reopen the popup. The change appears.
+- [ ] Change a visible string, press reload on the extension card, then reopen the side panel. The change appears.
 - [ ] Press F5 on the test page after changing `src/content/agent.js`.
 - [ ] A task that was running before reload shows as interrupted/stopped rather than staying "Working" forever.
 
@@ -266,7 +267,7 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 
 - [ ] With a normal page active, the tab bar shows `Page access`.
 - [ ] Select another tab in the picker; Chrome asks for that site. **Allow** → the tab bar updates and the badge becomes `Page access`.
-- [ ] Select another tab and **Deny**. The previous selection remains, the popup explains that access is needed, and no task starts.
+- [ ] Select another tab and **Deny**. The previous selection remains, the panel explains that access is needed, and no task starts.
 - [ ] Revoke the site in Settings → Behaviour → Website and endpoint access. The badge returns to `Allow access` and Chrome asks again next time.
 
 ### 4. Test the active tab
@@ -315,7 +316,7 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 - [ ] Start a multi-step task and press **Stop** immediately. The UI changes to Stopping/Stopped, the page stops changing, and the stop button disappears.
 - [ ] Start a task, press Stop while the model is thinking, then wait 30 seconds. No late answer or action appears.
 - [ ] Start a task, press Stop, then immediately start another. The new task runs and the old one cannot overwrite its messages.
-- [ ] Close and reopen the popup during a task. Reopening shows the current state consistently; Stop still works.
+- [ ] Close and reopen the side panel during a task. Reopening shows the current state consistently; Stop still works.
 
 ### 11. Test restricted pages
 
@@ -331,13 +332,13 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 - [ ] Test with a 200 response that has empty content if you can simulate one; the error mentions the response shape and suggests a fix.
 - [ ] NVIDIA NIM: test the preset (or a compatible endpoint) and confirm a normal answer.
 - [ ] Ollama: test a local model with no key.
-- [ ] Confirm no key appears in the popup's rendered text, console, task steps, or page DOM.
+- [ ] Confirm no key appears in the panel's rendered text, console, task steps, or page DOM.
 
 ### 13. Test the UI
 
-- [ ] Resize/zoom the popup; text wraps, the composer stays usable, and nothing is cut off.
+- [ ] Drag the panel wider and narrower, and zoom: text wraps, the composer stays usable, and nothing is cut off.
 - [ ] Switch Auto/Light/Dark in Behaviour; both themes are legible and persist after reopening.
-- [ ] Navigate the entire popup with Tab/Shift+Tab; every control has a visible focus ring and sensible order.
+- [ ] Navigate the entire panel with Tab/Shift+Tab; every control has a visible focus ring and sensible order.
 - [ ] Send a very long answer (paste or ask for detail); it scrolls, does not overflow, and the newest content remains reachable.
 - [ ] With reduced motion enabled in the OS, animations are minimal.
 - [ ] Clear conversation confirms, then empties the chat and survives reopening.

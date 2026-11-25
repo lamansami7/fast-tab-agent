@@ -2089,6 +2089,28 @@ function bindEvents() {
     }
   });
 
+  // The side panel stays open when the user switches tabs, so follow the active
+  // tab instead of showing whatever was selected when the panel opened.
+  let tabRefreshTimer = null;
+  const syncTab = () => {
+    clearTimeout(tabRefreshTimer);
+    tabRefreshTimer = setTimeout(() => {
+      void refreshTabInfo({ quiet: true }).then(() => {
+        renderTabBar();
+        if (state.view === 'tabs') renderTabs();
+      });
+    }, 250);
+  };
+  if (chrome.tabs?.onActivated) chrome.tabs.onActivated.addListener(syncTab);
+  if (chrome.tabs?.onRemoved) chrome.tabs.onRemoved.addListener(syncTab);
+  if (chrome.tabs?.onUpdated) {
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (tab?.active === false) return;
+      if (!changeInfo?.url && !changeInfo?.title) return;
+      syncTab();
+    });
+  }
+
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === 'fta:progress' && message.task) {
       const task = message.task;

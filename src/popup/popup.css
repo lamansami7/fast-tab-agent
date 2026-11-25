@@ -1,6 +1,7 @@
 /* ==========================================================================
-   Fast Tab Agent — popup
-   A compact, chat-first surface (420 × 600) with light and dark themes.
+   Fast Tab Agent — side panel
+   A chat-first surface that fills Chrome's side panel (and stays open while
+   you work on the page) with light and dark themes.
    ========================================================================== */
 
 *,
@@ -98,8 +99,9 @@
 
 html,
 body {
-  width: 420px;
-  height: 600px;
+  width: 100%;
+  height: 100%;
+  min-width: 320px;
   margin: 0;
   overflow: hidden;
 }
@@ -183,9 +185,19 @@ code {
   display: flex;
   flex-direction: column;
   width: 100%;
+  max-width: 760px;
   height: 100%;
+  margin: 0 auto;
   background: var(--bg);
   overflow: hidden;
+}
+
+/* The panel can be dragged wider than a readable chat column needs. */
+@media (min-width: 761px) {
+  .app {
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+  }
 }
 
 .topbar {

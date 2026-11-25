@@ -2,7 +2,7 @@
 /**
  * UI preview server (development only — never shipped in the extension).
  *
- * Serves the real popup from src/popup with tools/preview/mock-chrome.js
+ * Serves the real side-panel UI from src/popup with tools/preview/mock-chrome.js
  * injected, so the interface can be reviewed in a normal browser tab without
  * loading the unpacked extension. All provider calls are simulated.
  *
@@ -33,7 +33,7 @@ const LANDING = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Fast Tab Agent — popup preview</title>
+<title>Fast Tab Agent — side panel preview</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -58,12 +58,12 @@ const LANDING = `<!doctype html>
   h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
   .head p { margin: 4px 0 0; color: #8b93a7; font-size: 12.5px; }
   .frame {
-    width: 420px; height: 600px; border-radius: 16px; overflow: hidden;
+    width: 400px; height: 720px; border-radius: 16px; overflow: hidden;
     border: 1px solid rgba(255,255,255,.10);
     box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(0,0,0,.4);
     background: #0a0b10; position: relative;
   }
-  iframe { width: 420px; height: 600px; border: 0; display: block; }
+  iframe { width: 400px; height: 720px; border: 0; display: block; }
   .notes {
     max-width: 420px; font-size: 11.5px; color: #6f7891; text-align: center;
   }
@@ -85,9 +85,9 @@ const LANDING = `<!doctype html>
       </span>
       <h1>Fast Tab Agent</h1>
     </div>
-    <p>Live preview of the extension popup — canned tabs, providers and a scripted task.</p>
+    <p>Live preview of the extension side panel — canned tabs, providers and a scripted task.</p>
   </div>
-  <div class="frame"><iframe src="/popup.html" title="Fast Tab Agent popup"></iframe></div>
+  <div class="frame"><iframe src="/popup.html" title="Fast Tab Agent side panel"></iframe></div>
   <div class="actions">
     <button type="button" onclick="document.querySelector('iframe').contentWindow.location.reload()">Reset preview</button>
   </div>
