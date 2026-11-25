@@ -187,7 +187,7 @@ test('NVIDIA NIM preset has the expected OpenAI-compatible configuration', () =>
   assert.equal(provider.presetId, 'nvidia');
   assert.equal(provider.name, 'NVIDIA NIM');
   assert.equal(provider.baseUrl, 'https://integrate.api.nvidia.com/v1');
-  assert.equal(provider.model, 'meta/llama-3.3-70b-instruct');
+  assert.equal(provider.model, 'nvidia/nemotron-3.5-lightning-30b-a3b');
   assert.equal(provider.endpointPath, '');
   assert.equal(provider.authHeader, 'Authorization');
   assert.equal(provider.authScheme, 'Bearer');
