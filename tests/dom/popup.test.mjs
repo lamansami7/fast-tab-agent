@@ -23,6 +23,19 @@ if (JSDOM) {
   const ROOT = join(HERE, '..', '..');
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clone = (value) => JSON.parse(JSON.stringify(value));
+  // Poll for an observable UI/worker state instead of assuming a fixed amount
+  // of wall-clock time is enough. The popup renders synchronously before it
+  // sends task:start; on a slow or busy machine that render can outlast any
+  // hard-coded delay, which made this test flaky.
+  const waitFor = async (predicate, { timeout = 5000, interval = 10 } = {}) => {
+    const deadline = Date.now() + timeout;
+    while (!predicate()) {
+      if (Date.now() > deadline) {
+        throw new Error('Timed out waiting for the popup to reach the expected state.');
+      }
+      await delay(interval);
+    }
+  };
 
   test('popup: chat, tabs, settings and provider flow', async () => {
     const html = await readFile(join(ROOT, 'src/popup/popup.html'), 'utf8');
@@ -312,7 +325,11 @@ if (JSDOM) {
     process.on('unhandledRejection', (reason) => errors.push(reason));
 
     await import(join(ROOT, 'src/popup/popup.js'));
-    await delay(220);
+    await waitFor(
+      () =>
+        document.querySelector('#chipLabel')?.textContent === 'Groq' &&
+        document.querySelector('#tabCount')?.textContent === '4',
+    );
 
     const $ = (selector) => document.querySelector(selector);
     const visible = (node) => Boolean(node) && !node.hidden;
@@ -349,7 +366,7 @@ if (JSDOM) {
 
     // 3. send a request; the optimistic conversation appears immediately
     $('#runBtn').click();
-    await delay(90);
+    await waitFor(() => started.length === 1 && $('#stopBtn').hidden === false);
     assert.equal(started.length, 1);
     assert.equal(started[0].tabId, 7);
     assert.equal(started[0].goal, 'Summarize this page.');
@@ -416,7 +433,7 @@ if (JSDOM) {
     $('#goalInput').value = 'Trigger a provider error';
     fire($('#goalInput'));
     $('#runBtn').click();
-    await delay(70);
+    await waitFor(() => started.length === 2 && $('#stopBtn').hidden === false);
     currentTask = {
       ...currentTask,
       goal: 'Trigger a provider error',
@@ -440,9 +457,9 @@ if (JSDOM) {
     $('#goalInput').value = 'Stop this request';
     fire($('#goalInput'));
     $('#runBtn').click();
-    await delay(70);
+    await waitFor(() => started.length === 3 && $('#stopBtn').hidden === false);
     $('#stopBtn').click();
-    await delay(40);
+    await waitFor(() => stopCalls.length === 1);
     assert.equal(stopCalls.length, 1);
     assert.match($('#messages').textContent, /Stopping/);
     currentTask = {
@@ -469,7 +486,12 @@ if (JSDOM) {
     assert.equal($('#tabsPermissionBanner').hidden, true);
 
     findText('.tab-row', 'Docs').click();
-    await delay(100);
+    await waitFor(
+      () =>
+        visible($('#viewMain')) &&
+        $('#tabTitle').textContent === 'Docs' &&
+        $('#tabPermBtn').dataset.state === 'granted',
+    );
     assert.ok(
       requested.some((entry) => entry.origins.includes('https://docs.example.org/*')),
       'site access was requested for the chosen tab',
@@ -490,7 +512,7 @@ if (JSDOM) {
     assert.ok(visible($('#viewTabs')), 'the picker stays open after a restricted page');
 
     findText('.tab-row', 'Other window').click();
-    await delay(90);
+    await waitFor(() => /still hides this tab.s address/i.test($('#toast').textContent));
     assert.match($('#toast').textContent, /still hides this tab.s address/i);
     $('#tabsDone').click();
     assert.ok(visible($('#viewMain')));
@@ -509,28 +531,35 @@ if (JSDOM) {
 
     $('#prefTheme').value = 'dark';
     fire($('#prefTheme'), 'change');
-    await delay(80);
+    await waitFor(
+      () => settings.theme === 'dark' && document.documentElement.dataset.theme === 'dark',
+    );
     assert.equal(document.documentElement.dataset.theme, 'dark');
     assert.equal(settings.theme, 'dark');
 
     $('#prefMaxSteps').value = '6';
     fire($('#prefMaxSteps'), 'change');
-    await delay(80);
+    await waitFor(() => settings.maxSteps === 6);
     assert.equal(settings.maxSteps, 6);
 
-    await delay(60);
+    await waitFor(() => $('#siteAccessList').children.length >= 2);
     assert.ok($('#siteAccessList').children.length >= 2, 'granted hosts are listed');
     const docsAccess = findText('.access-row', 'docs.example.org');
     assert.ok(docsAccess, 'the selected site is listed');
     docsAccess.querySelector('button').click();
-    await delay(120);
+    await waitFor(() => !grantedOrigins.has('https://docs.example.org/*'));
     assert.ok(!grantedOrigins.has('https://docs.example.org/*'));
 
     // 11. clear conversation with confirmation
     $('#clearChatBtn').click();
     assert.equal($('#clearConfirm').hidden, false);
     $('#clearConfirmBtn').click();
-    await delay(80);
+    await waitFor(
+      () =>
+        $('#messages').children.length === 0 &&
+        storageData['fta.chat'] === undefined &&
+        $('#chatCount').textContent === 'No messages',
+    );
     assert.equal($('#messages').children.length, 0);
     assert.equal($('#emptyState').hidden, false);
     assert.equal(storageData['fta.chat'], undefined);
@@ -546,21 +575,31 @@ if (JSDOM) {
       (button) => button.getAttribute('aria-label') === 'Add OpenAI',
     );
     addOpenAI.click();
-    await delay(50);
+    await waitFor(
+      () =>
+        visible($('#viewEditor')) &&
+        $('#fBaseUrl').value === 'https://api.openai.com/v1' &&
+        $('#fModel').value === 'gpt-4o-mini',
+    );
     assert.ok(visible($('#viewEditor')));
     assert.equal($('#fBaseUrl').value, 'https://api.openai.com/v1');
     assert.equal($('#fModel').value, 'gpt-4o-mini');
 
     $('#fModel').value = 'gpt-4.1-mini';
     fire($('#fModel'));
-    await delay(900);
+    await waitFor(
+      () =>
+        providerStore.length === 2 &&
+        providerStore[1].model === 'gpt-4.1-mini' &&
+        $('#saveState').dataset.state === 'saved',
+    );
     assert.equal(providerStore.length, 2);
     assert.equal(providerStore[1].model, 'gpt-4.1-mini');
     assert.equal($('#saveState').dataset.state, 'saved');
 
     $('#fApiKey').value = 'sk-test-key-123456';
     fire($('#fApiKey'));
-    await delay(900);
+    await waitFor(() => providerStore[1]?.apiKey === 'sk-test-key-123456');
     assert.equal(providerStore[1].apiKey, 'sk-test-key-123456');
     assert.equal($('#fApiKey').type, 'password');
     $('#toggleKey').click();
@@ -569,7 +608,7 @@ if (JSDOM) {
     assert.equal($('#fApiKey').type, 'password');
 
     $('#testBtn').click();
-    await delay(100);
+    await waitFor(() => $('#testResult').dataset.tone === 'success');
     assert.equal($('#testResult').dataset.tone, 'success');
     assert.match($('#testResult').textContent, /Connection successful/);
     assert.ok(
@@ -578,7 +617,9 @@ if (JSDOM) {
     );
 
     $('#activateBtn').click();
-    await delay(140);
+    await waitFor(
+      () => activeId === providerStore[1].id && $('#activateBtn').textContent === 'Active provider',
+    );
     assert.equal(activeId, providerStore[1].id);
     assert.equal($('#activateBtn').textContent, 'Active provider');
 
@@ -588,7 +629,7 @@ if (JSDOM) {
     assert.equal($('#deleteConfirm').hidden, true);
     $('#deleteBtn').click();
     $('#deleteConfirmBtn').click();
-    await delay(140);
+    await waitFor(() => providerStore.length === 1 && visible($('#viewSettings')));
     assert.equal(providerStore.length, 1);
     assert.ok(visible($('#viewSettings')));
 
@@ -602,7 +643,7 @@ if (JSDOM) {
     await delay(40);
     assert.equal(started.length, startCount, 'Shift+Enter keeps a new line');
     key($('#goalInput'), { key: 'Enter' });
-    await delay(90);
+    await waitFor(() => started.length === startCount + 1 && $('#stopBtn').hidden === false);
     assert.equal(started.length, startCount + 1, 'Enter sends');
 
     emit({
@@ -612,7 +653,7 @@ if (JSDOM) {
       answer: 'Keyboard request finished.',
       error: null,
     });
-    await delay(60);
+    await waitFor(() => /Keyboard request finished/.test($('#messages').textContent));
     assert.match($('#messages').textContent, /Keyboard request finished/);
 
     assert.deepEqual(errors, [], `unexpected runtime errors: ${errors.map(String).join(', ')}`);
