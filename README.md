@@ -162,7 +162,7 @@ A preset only suggests a starting URL and model. Any model ID the endpoint accep
 
 | Provider | Base URL | Suggested model |
 | --- | --- | --- |
-| NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | `meta/llama-3.3-70b-instruct` |
+| NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | `nvidia/nemotron-3.5-lightning-30b-a3b` |
 | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | OpenRouter | `https://openrouter.ai/api/v1` | User-configured |
@@ -253,7 +253,7 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 ### 1. Load the unpacked extension
 
 - [ ] Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, select this repository.
-- [ ] The card shows Fast Tab Agent 1.2.0 with no errors. Click **Errors** if present.
+- [ ] The card shows Fast Tab Agent 1.2.1 with no errors. Click **Errors** if present.
 - [ ] Pin the extension and click its icon: the side panel opens (no popup) with the header, tab bar and empty state, and no console errors in the panel's DevTools.
 - [ ] Click on the page while the panel is open: the panel stays open. Switch tabs: the tab bar follows the new active tab.
 
@@ -329,6 +329,8 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 
 - [ ] Add a second provider, save, switch between providers, reopen the popup. Each keeps its own key, model and endpoint.
 - [ ] **Test connection** succeeds; try a wrong key and an unknown model and confirm the messages are actionable.
+- [ ] Test a reasoning model that hits the probe's token cap: it reports a successful connection with a token-limit note instead of hanging for 30 seconds.
+- [ ] Select a background tab: starting a task brings that tab to the front so its actions are visible.
 - [ ] Test with a 200 response that has empty content if you can simulate one; the error mentions the response shape and suggests a fix.
 - [ ] NVIDIA NIM: test the preset (or a compatible endpoint) and confirm a normal answer.
 - [ ] Ollama: test a local model with no key.
