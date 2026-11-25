@@ -156,6 +156,27 @@ export function filterTabs(tabs, query) {
   });
 }
 
+/**
+ * Pick the default tab for the composer.
+ *
+ * Prefer the active tab when it is a normal page. Opening the side panel while
+ * chrome://extensions (or another browser page) is active must not leave the
+ * agent pointing at a page it can never read, so fall back to the first usable
+ * website tab instead.
+ */
+export function chooseInitialTabId(tabs, activeTabId = null) {
+  const list = Array.isArray(tabs) ? tabs : [];
+  const usable = (tab) => Boolean(tab) && tab.supported !== false && tab.restricted !== true;
+  const active = list.find((tab) => tab.id === activeTabId);
+  if (usable(active)) return active.id;
+  const fallback = list.find((tab) => usable(tab) && tab.url);
+  if (fallback) return fallback.id;
+  const anyUsable = list.find(usable);
+  if (anyUsable) return anyUsable.id;
+  if (active) return active.id;
+  return list[0]?.id ?? null;
+}
+
 /** Keep the active tab first, then the current selection, then browser order. */
 export function sortTabsForPicker(tabs, { activeTabId = null, selectedTabId = null } = {}) {
   const rank = (tab) => {
