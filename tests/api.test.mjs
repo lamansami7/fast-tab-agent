@@ -399,3 +399,270 @@ test('model discovery refuses cross-host redirects and missing-key requests', as
   );
   assert.equal(noKeyFetch.calls.length, 0);
 });
+
+
+test('extracts text from top-level output_text responses', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({ body: { output_text: 'hello from output_text', choices: [] } }),
+  );
+  const result = await chatCompletion(makeProvider(), messages, { fetchImpl });
+  assert.equal(result.content, 'hello from output_text');
+});
+
+test('extracts text from Responses-API-like output arrays', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        output: [
+          { type: 'message', content: [{ type: 'output_text', text: 'part A' }, { type: 'output_text', text: ' part B' }] },
+        ],
+      },
+    }),
+  );
+  const result = await chatCompletion(makeProvider(), messages, { fetchImpl });
+  assert.equal(result.content, 'part A part B');
+});
+
+test('extracts object-shaped text content parts', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        choices: [
+          {
+            message: {
+              content: [
+                { type: 'text', text: { value: 'hello', annotations: [] } },
+                { type: 'text', text: ' world' },
+              ],
+            },
+          },
+        ],
+      },
+    }),
+  );
+  const result = await chatCompletion(makeProvider(), messages, { fetchImpl });
+  assert.equal(result.content, 'hello world');
+});
+
+test('extracts message content when content is a text object', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        choices: [{ message: { content: { type: 'text', text: 'object content' } }, finish_reason: 'stop' }],
+      },
+    }),
+  );
+  const result = await chatCompletion(makeProvider(), messages, { fetchImpl });
+  assert.equal(result.content, 'object content');
+});
+
+test('ignores reasoning parts in content arrays', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        choices: [
+          {
+            message: {
+              content: [
+                { type: 'reasoning', text: 'secret chain of thought' },
+                { type: 'text', text: 'visible answer' },
+              ],
+            },
+            finish_reason: 'stop',
+          },
+        ],
+      },
+    }),
+  );
+  const result = await chatCompletion(makeProvider(), messages, { fetchImpl });
+  assert.equal(result.content, 'visible answer');
+  assert.equal(result.content.includes('secret chain of thought'), false);
+});
+
+test('empty responses include finish reason and redacted shape diagnostics', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        choices: [
+          {
+            message: { content: null, role: 'assistant' },
+            finish_reason: 'stop',
+          },
+        ],
+      },
+    }),
+  );
+  await assert.rejects(
+    () => chatCompletion(makeProvider(), messages, { fetchImpl }),
+    (error) => {
+      assert.equal(error.code, 'invalid_response');
+      assert.match(error.message, /empty response/i);
+      assert.match(error.providerMessage, /finish_reason=stop/);
+      assert.match(error.providerMessage, /content=null/);
+      assert.equal(error.providerMessage.includes('sk-secret-key-123456'), false);
+      return true;
+    },
+  );
+});
+
+test('empty reasoning-only responses do not expose reasoning content', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        choices: [
+          {
+            message: { content: null, reasoning_content: 'private internal reasoning sk-secret-key-123456' },
+            finish_reason: 'stop',
+          },
+        ],
+      },
+    }),
+  );
+  await assert.rejects(
+    () => chatCompletion(makeProvider(), messages, { fetchImpl }),
+    (error) => {
+      assert.equal(error.code, 'invalid_response');
+      assert.match(error.message, /reasoning/i);
+      assert.match(error.providerMessage, /reasoning_content=present/);
+      assert.equal(error.providerMessage.includes('private internal reasoning'), false);
+      assert.equal(error.providerMessage.includes('sk-secret-key-123456'), false);
+      assert.equal(error.message.includes('private internal reasoning'), false);
+      return true;
+    },
+  );
+});
+
+test('length-empty responses retry without max_tokens once', async () => {
+  const fetchImpl = createFetchMock(({ callIndex }) => {
+    if (callIndex === 0) {
+      return jsonResponse({
+        body: {
+          choices: [{ message: { content: '' }, finish_reason: 'length' }],
+        },
+      });
+    }
+    return jsonResponse({
+      body: { choices: [{ message: { content: 'ok after retry' }, finish_reason: 'stop' }] },
+    });
+  });
+  const provider = makeProvider({ maxTokens: 24 });
+  const result = await chatCompletion(provider, messages, { fetchImpl });
+  assert.equal(result.content, 'ok after retry');
+  assert.ok(result.droppedParams.includes('max_tokens'));
+  assert.equal('max_tokens' in fetchImpl.calls[1].body, false);
+});
+
+test('length-empty responses without recoverable token params report diagnostics', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        choices: [{ message: { content: '' }, finish_reason: 'length' }],
+      },
+    }),
+  );
+  await assert.rejects(
+    () => chatCompletion(makeProvider(), messages, { fetchImpl }),
+    (error) => {
+      assert.equal(error.code, 'invalid_response');
+      assert.match(error.message, /token limit/i);
+      assert.match(error.providerMessage, /finish_reason=length/);
+      return true;
+    },
+  );
+});
+
+test('testConnection maps invalid_response to invalid_response status', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: { choices: [{ message: { content: '' }, finish_reason: 'stop' }] },
+    }),
+  );
+  const result = await testConnection(makeProvider(), { fetchImpl });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'invalid_response');
+  assert.equal(result.code, 'invalid_response');
+  assert.match(result.providerMessage || '', /finish_reason=stop/);
+});
+
+test('testConnection maps content_filtered responses', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: { choices: [{ message: { content: '' }, finish_reason: 'content_filter' }] },
+    }),
+  );
+  const result = await testConnection(makeProvider(), { fetchImpl });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'content_filtered');
+  assert.equal(result.code, 'content_filtered');
+});
+
+
+test('200 responses with an error object are surfaced as provider errors', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: { error: { message: 'upstream failure', type: 'server_error' } },
+    }),
+  );
+  await assert.rejects(
+    () => chatCompletion(makeProvider(), messages, { fetchImpl }),
+    (error) => {
+      assert.ok(error instanceof ProviderError);
+      assert.equal(error.status, 200);
+      assert.match(error.providerMessage || error.message, /upstream failure/i);
+      return true;
+    },
+  );
+});
+
+test('response_format is dropped on unsupported-parameter errors', async () => {
+  const fetchImpl = createFetchMock(({ callIndex }) => {
+    if (callIndex === 0) {
+      return jsonResponse({
+        status: 400,
+        body: { error: { message: 'response_format is not supported by this model' } },
+      });
+    }
+    return jsonResponse({ body: { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] } });
+  });
+  const result = await chatCompletion(makeProvider(), messages, { fetchImpl, jsonMode: true });
+  assert.equal(result.content, 'ok');
+  assert.ok(result.droppedParams.includes('response_format'));
+  assert.equal('response_format' in fetchImpl.calls[1].body, false);
+});
+
+test('authentication failures are not retried', async () => {
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({ status: 401, body: { error: { message: 'bad key' } } }),
+  );
+  await assert.rejects(
+    () => chatCompletion(makeProvider(), messages, { fetchImpl }),
+    (error) => error.code === 'auth_failed',
+  );
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
+test('empty-response diagnostics are redacted and do not leak content', async () => {
+  const secret = 'sk-secret-key-123456';
+  const fetchImpl = createFetchMock(() =>
+    jsonResponse({
+      body: {
+        choices: [
+          {
+            message: { content: '', role: 'assistant' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 5 },
+      },
+    }),
+  );
+  await assert.rejects(
+    () => chatCompletion(makeProvider({ apiKey: secret }), messages, { fetchImpl }),
+    (error) => {
+      assert.equal(error.providerMessage.includes(secret), false);
+      assert.match(error.providerMessage, /finish_reason=stop/);
+      assert.match(error.providerMessage, /choices=1/);
+      return true;
+    },
+  );
+});

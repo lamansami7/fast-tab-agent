@@ -179,3 +179,18 @@ test('api keys are masked in display strings and stripped from public copies', (
   assert.equal(pub.hasApiKey, true);
   assert.equal(providerForPopup(provider).apiKey, 'sk-super-secret-key');
 });
+
+
+test('NVIDIA NIM preset has the expected OpenAI-compatible configuration', () => {
+  const provider = createProvider('nvidia');
+  assert.equal(provider.type, 'preset');
+  assert.equal(provider.presetId, 'nvidia');
+  assert.equal(provider.name, 'NVIDIA NIM');
+  assert.equal(provider.baseUrl, 'https://integrate.api.nvidia.com/v1');
+  assert.equal(provider.model, 'meta/llama-3.3-70b-instruct');
+  assert.equal(provider.endpointPath, '');
+  assert.equal(provider.authHeader, 'Authorization');
+  assert.equal(provider.authScheme, 'Bearer');
+  const validation = validateProviderForRequest({ ...provider, apiKey: 'nvapi-test' });
+  assert.equal(validation.valid, true);
+});
