@@ -273,7 +273,8 @@ function detectParamFromBody(msg) {
  * @param {object} provider normalized provider record
  * @param {Array<{role:string,content:string}>} messages
  * @param {{maxTokens?:number, temperature?:number|null, jsonMode?:boolean,
- *          timeoutMs?:number, signal?:AbortSignal, fetchImpl?:Function}} [options]
+ *          timeoutMs?:number, signal?:AbortSignal, fetchImpl?:Function,
+ *          acceptTruncated?:boolean}} [options]
  * @returns {Promise<{content:string, model:string, usage:object|null, latencyMs:number,
  *                    attempts:number, droppedParams:string[], finishReason:string|null, endpoint:string}>}
  */
@@ -434,6 +435,23 @@ export async function chatCompletion(provider, messages, options = {}) {
     // action payloads, status messages, and task history as a final safeguard.
     content = redact(content, provider.apiKey);
     if (!content.trim()) {
+      // A connection probe only needs proof that the endpoint accepted and
+      // answered the request. Reasoning models can spend a small probe budget
+      // before emitting text; retrying without a token cap can then run for a
+      // long time, so return the truncated reply instead.
+      if (options.acceptTruncated === true && finishReason === 'length') {
+        return {
+          content: '',
+          model: typeof payload.model === 'string' ? payload.model : provider.model,
+          usage: payload.usage && typeof payload.usage === 'object' ? payload.usage : null,
+          finishReason,
+          latencyMs: Date.now() - startedAt,
+          attempts: attempt,
+          droppedParams: dropped,
+          endpoint,
+          truncated: true,
+        };
+      }
       // Controlled, bounded fallback: an empty completion with finish_reason=length
       // can be caused by an overly small token limit, especially on reasoning models.
       // Drop token-limit params once and retry, but never silently hide the error if
@@ -606,13 +624,19 @@ export async function testConnection(provider, options = {}) {
         timeoutMs: options.timeoutMs || LIMITS.testTimeoutMs,
         signal: options.signal,
         fetchImpl: options.fetchImpl,
+        // A 200 with finish_reason=length still proves the endpoint, key and
+        // model work. Do not turn a thinking model's tiny probe budget into an
+        // unbounded retry.
+        acceptTruncated: true,
       },
     );
+    const reply = redact(result.content.trim().slice(0, 160), provider.apiKey);
+    const truncated = result.truncated === true || (!reply && result.finishReason === 'length');
     return {
       status: TEST_STATUS.success,
       ok: true,
       message: `Connected to ${host}.`,
-      reply: redact(result.content.trim().slice(0, 160), provider.apiKey),
+      reply,
       model: result.model,
       httpStatus: 200,
       endpoint,
@@ -620,9 +644,11 @@ export async function testConnection(provider, options = {}) {
       latencyMs: result.latencyMs || Date.now() - startedAt,
       droppedParams: result.droppedParams,
       code: null,
-      hint: result.droppedParams.length
-        ? `This model does not accept: ${result.droppedParams.join(', ')}. Those settings were skipped.`
-        : '',
+      hint: truncated
+        ? 'The model hit the test token limit before returning text. The endpoint and key work, but this model may need a larger output budget or a non-reasoning model.'
+        : result.droppedParams.length
+          ? `This model does not accept: ${result.droppedParams.join(', ')}. Those settings were skipped.`
+          : '',
     };
   } catch (error) {
     const err = toProviderError(error, { secret: provider.apiKey });
@@ -631,7 +657,10 @@ export async function testConnection(provider, options = {}) {
       ok: false,
       code: err.code,
       message: err.message,
-      hint: err.hint,
+      hint:
+        err.code === ERROR_CODES.timeout
+          ? 'The endpoint did not reply in time. Large or reasoning models can exceed the test budget; try a smaller model, or retry when the provider is less busy.'
+          : err.hint,
       providerMessage: err.providerMessage,
       httpStatus: err.status,
       endpoint,
