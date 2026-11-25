@@ -10,10 +10,21 @@
  * objects and page content flow through this script.
  */
 (function () {
-  if (window.__ftaAgentLoaded) return;
+  // Re-injection after an extension reload must register a fresh listener. The
+  // old isolated world is dead, so compare the runtime id instead of trusting
+  // a bare boolean flag that would block the new script forever.
+  let runtimeId = '';
+  try {
+    runtimeId = typeof chrome !== 'undefined' && chrome.runtime ? chrome.runtime.id || '' : '';
+  } catch {
+    runtimeId = '';
+  }
+  if (window.__ftaAgentLoaded === true && window.__ftaAgentRuntimeId === runtimeId) return;
   window.__ftaAgentLoaded = true;
+  window.__ftaAgentRuntimeId = runtimeId;
 
-  const MAX_ELEMENTS = 400;
+  // Bounded so a huge page cannot produce an unbounded snapshot payload.
+  const MAX_ELEMENTS = 160;
   const SELECTOR = [
     'a[href]',
     'button',
@@ -81,6 +92,10 @@
 
   const TEXT_INPUT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'number']);
   const SENSITIVE_FIELD_RE = /password|passcode|one.?time|verification|auth(?:entication)?|secret|token|credit.?card|card.?number|cvc|cvv|security.?code|ssn|social.?security|bank.?account|account.?number|date.?of.?birth|birth.?date|email|phone|address/i;
+  // A narrower list: these fields are never typed into automatically, even if
+  // the user's request seems to ask for it. Ordinary contact fields (email,
+  // phone, address) remain available for form filling.
+  const SECRET_FIELD_RE = /password|passcode|one.?time|\botp\b|verification.?code|auth(?:entication)?.?code|\bsecret\b|credit.?card|card.?number|cvc|cvv|security.?code|ssn|social.?security/i;
   const HIGH_IMPACT_RE = /\b(buy|purchase|pay|checkout|place order|submit order|delete|remove|send|publish|post|transfer|withdraw|book|booking|reservation|subscribe|unsubscribe|cancel (?:order|booking|reservation|subscription)|sign out|log out|reset)\b/i;
 
   function isSensitiveField(el) {
@@ -91,6 +106,17 @@
       el.getAttribute('placeholder'), autocomplete,
     ].filter(Boolean).join(' ');
     return SENSITIVE_FIELD_RE.test(metadata);
+  }
+
+  function isSecretField(el) {
+    if (el instanceof HTMLInputElement && el.type.toLowerCase() === 'password') return true;
+    const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+    if (/^(cc-|one-time-code$|current-password$|new-password$)/.test(autocomplete)) return true;
+    const metadata = [
+      el.getAttribute('name'), el.id, el.getAttribute('aria-label'),
+      el.getAttribute('placeholder'), autocomplete,
+    ].filter(Boolean).join(' ');
+    return SECRET_FIELD_RE.test(metadata);
   }
 
   function elementLabel(el) {
@@ -204,6 +230,7 @@
             ? String(el.value ?? '').slice(0, 80)
             : undefined,
         sensitive: isSensitiveField(el) || undefined,
+        secret: isSecretField(el) || undefined,
         href: tag === 'a' ? String(el.getAttribute('href') || '').slice(0, 300) : undefined,
         checked: el.checked === true ? true : undefined,
         disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true' ? true : undefined,
@@ -468,9 +495,14 @@
         if (!el) return { ok: false, observation: `Element #${action.elementId} is no longer visible on the page.` };
         const tag = el.tagName.toLowerCase();
         if (isDisabled(el) || el.readOnly) return { ok: false, observation: `${describeElement(el)} cannot be edited.` };
+        if (isSecretField(el)) {
+          return {
+            ok: false,
+            observation: `${describeElement(el)} looks like a sensitive field (password, payment or verification code), so the agent will not type into it.`,
+          };
+        }
         if ((tag !== 'input' && tag !== 'textarea' && !el.isContentEditable) ||
-            (tag === 'input' && (!TEXT_INPUT_TYPES.has((el.type || 'text').toLowerCase()) || el.type === 'password')) ||
-            isSensitiveField(el) && tag === 'input' && el.type === 'password') {
+            (tag === 'input' && !TEXT_INPUT_TYPES.has((el.type || 'text').toLowerCase()))) {
           return { ok: false, observation: `${describeElement(el)} is not a supported text field.` };
         }
         if (action.submit === true && hasHighImpactContext(el) && !confirmHighImpact('submit this form')) {

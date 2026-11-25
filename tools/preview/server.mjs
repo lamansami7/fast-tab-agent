@@ -85,15 +85,15 @@ const LANDING = `<!doctype html>
       </span>
       <h1>Fast Tab Agent</h1>
     </div>
-    <p>Live preview of the extension popup — canned providers and a scripted task.</p>
+    <p>Live preview of the extension popup — canned tabs, providers and a scripted task.</p>
   </div>
   <div class="frame"><iframe src="/popup.html" title="Fast Tab Agent popup"></iframe></div>
   <div class="actions">
     <button type="button" onclick="document.querySelector('iframe').contentWindow.location.reload()">Reset preview</button>
   </div>
   <p class="notes">
-    Everything here is mocked: clicking <code>Test connection</code> or <code>Run agent</code> never leaves this page.
-    In the real extension all requests are executed by the background worker.
+    Everything here is mocked: tabs, permissions, providers and task progress never leave this page.
+    Try the tab picker, send a request, stop it, and switch theme in Settings → Behaviour.
   </p>
 </body>
 </html>`;

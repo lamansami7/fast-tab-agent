@@ -171,7 +171,7 @@ test('snapshot formatting marks offscreen elements and truncation', () => {
   snapshot.truncatedElements = 12;
   const text = formatSnapshot(snapshot);
   assert.match(text, /offscreen/);
-  assert.match(text, /12 more elements/);
+  assert.match(text, /12 more interactive elements/);
   assert.match(text, /TITLE: Cart/);
 });
 
