@@ -20,6 +20,7 @@ import {
 
 const MAX_CONSECUTIVE_FAILURES = 2;
 const MAX_REPAIRS = 1;
+const MAX_STAGNANT_REPEAT = 3;
 
 function safeEmit(onEvent, event) {
   if (typeof onEvent !== 'function') return;
@@ -62,6 +63,9 @@ export async function runAgentTask(params) {
   let answer = '';
   let plan = [];
   let lastError = null;
+  let lastActionFingerprint = '';
+  let stagnantRepeats = 0;
+  let recoveryNote = '';
 
   const isCancelled = () => {
     if (signal?.aborted) return true;
@@ -100,7 +104,7 @@ export async function runAgentTask(params) {
       { role: 'system', content: buildSystemPrompt() },
       {
         role: 'user',
-        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps: stepBudget }),
+        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps: stepBudget, note: recoveryNote }),
       },
     ];
 
@@ -186,6 +190,24 @@ export async function runAgentTask(params) {
     }
 
     const action = response.action;
+    // Detect identical actions against an effectively unchanged page.
+    const snapshotFingerprint = JSON.stringify({
+      url: snapshot?.url || '', title: snapshot?.title || '',
+      elements: (snapshot?.elements || []).map((e) => [e.id, e.tag, e.label, e.placeholder, e.disabled]),
+      text: String(snapshot?.text || '').slice(0, 500),
+    });
+    const actionFingerprint = `${snapshotFingerprint}::${JSON.stringify(action)}`;
+    if (actionFingerprint === lastActionFingerprint) stagnantRepeats += 1;
+    else stagnantRepeats = 0;
+    lastActionFingerprint = actionFingerprint;
+    if (stagnantRepeats >= MAX_STAGNANT_REPEAT) {
+      const message = 'Stopped because the agent repeated the same action on an unchanged page. Try a different approach or take control manually.';
+      safeEmit(onEvent, { phase: 'error', error: message });
+      return { status: 'error', steps, answer: message, plan, error: message, stalled: true };
+    }
+    recoveryNote = stagnantRepeats > 0
+      ? 'Your last action appears to have been repeated on an unchanged page. Choose a different action, inspect or scroll, or explain the blocker; do not repeat it.'
+      : '';
     if (!action || !ACTION_TYPES.includes(action.type)) {
       const error = new ProviderError(ERROR_CODES.invalid_model_output, 'The model returned no action.');
       safeEmit(onEvent, { phase: 'error', error: friendlyError(error) });
