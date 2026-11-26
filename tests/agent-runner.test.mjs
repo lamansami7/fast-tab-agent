@@ -249,3 +249,15 @@ test('denied or ambiguous actions are terminal and do not ask for another model 
   assert.equal(result.status, 'error');
   assert.match(result.error.message, /declined/);
 });
+
+
+test('read-only mode can search rendered page text', async () => {
+  const dispatches = [];
+  const result = await runAgentTask(baseParams({
+    mode: 'read',
+    callModel: modelQueue([{ action: { type: 'find', query: 'returns policy' } }, { done: true, answer: '30 days.' }]),
+    executeAction: async (action) => { dispatches.push(action); return { ok: true, observation: 'Returns policy: 30 days.' }; },
+  }));
+  assert.deepEqual(dispatches, [{ type: 'find', query: 'returns policy' }]);
+  assert.equal(result.status, 'done');
+});

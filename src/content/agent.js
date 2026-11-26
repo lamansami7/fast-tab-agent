@@ -665,6 +665,24 @@
         await sleep(ms);
         return { ok: true, observation: `Waited ${ms}ms.` };
       }
+      case 'find': {
+        const query = String(action.query || '').trim().replace(/\s+/g, ' ');
+        if (query.length < 2 || query.length > 120) return { ok: false, observation: 'Provide a literal phrase of 2–120 characters.' };
+        const raw = document.body?.innerText || '';
+        const maxChars = 180_000;
+        const text = raw.slice(0, maxChars).replace(/\s+/g, ' ');
+        // Escape all regex metacharacters: page search is literal, not executable syntax.
+        const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
+        const snippets = [];
+        for (const match of text.matchAll(pattern)) {
+          snippets.push(text.slice(Math.max(0, match.index - 65), match.index + match[0].length + 80));
+          if (snippets.length === 3) break;
+        }
+        const limit = raw.length > maxChars ? ' Search was limited to the first 180,000 characters.' : '';
+        return { ok: true, observation: snippets.length
+          ? `Rendered page excerpts: ${snippets.join(' … | … ')}${limit}`
+          : `No literal match in the rendered text searched.${limit}` };
+      }
       case 'extract': {
         let text = '';
         if (action.elementId !== undefined) {

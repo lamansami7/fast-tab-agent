@@ -63,7 +63,7 @@
         <section class="tabbar" aria-label="Selected tab">
           <span class="tab-favicon" id="tabFavicon" aria-hidden="true">F</span>
           <div class="tab-text">
-            <span class="context-kicker">TARGET TAB</span>
+            <span class="context-kicker" id="targetMode">ACTIVE TAB</span>
             <span class="tab-title" id="tabTitle">Loading tab…</span>
             <span class="tab-meta">
               <span class="tab-host" id="tabHost">—</span>
@@ -97,8 +97,8 @@
               </svg>
             </div>
             <span class="context-kicker">YOUR BROWSER WORKSPACE</span>
-            <h1>Put this tab to work.</h1>
-            <p>Read and analyze this page, or give the agent a task to carry out.</p>
+            <h1>Describe the result you want.</h1>
+            <p>Ask a question or give the agent a task. Keep working while Fast Tab Agent stays beside your page.</p>
             <div class="suggestions" id="suggestions">
               <button type="button" class="suggestion" data-prompt="Summarize this page.">Summarize this page</button>
               <button type="button" class="suggestion" data-prompt="Find the main links on this page.">Find the main links</button>
@@ -110,7 +110,12 @@
           <div class="messages" id="messages" role="log" aria-live="off"></div>
         </section>
 
+        <div class="chat-jump" id="chatJump" hidden><button class="btn btn-quiet btn-sm" id="jumpLatestBtn" type="button">↓ Latest activity</button></div>
         <footer class="composer">
+          <div class="follow-up" id="followUpBar" hidden>
+            <span>Using the last result on this tab</span>
+            <button type="button" id="cancelFollowUp" class="message-tool">Remove</button>
+          </div>
           <div class="composer-tools">
             <label for="taskMode">Run mode</label>
             <select id="taskMode"><option value="act">Browser actions</option><option value="read">Read only</option></select>
@@ -121,6 +126,7 @@
             <textarea
               id="goalInput"
               rows="1"
+              maxlength="2000"
               spellcheck="false"
               placeholder="Ask or describe a task…"
             ></textarea>
@@ -460,6 +466,7 @@
 
         <div class="overlay-foot overlay-foot--flat">
           <span class="foot-note" id="tabFootNote">Only the tab you select is read.</span>
+          <button class="btn btn-quiet" id="followActiveBtn" type="button">Follow active tab</button>
           <button class="btn btn-primary" id="tabsDone" type="button">Done</button>
         </div>
       </section>

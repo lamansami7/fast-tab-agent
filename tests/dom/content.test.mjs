@@ -278,6 +278,15 @@ if (JSDOM) {
     assert.equal(panelScroll.ok, true);
     assert.equal(panel.scrollTop, 200);
 
+    const deepText = window.document.createElement('p');
+    deepText.textContent = `${'Filler '.repeat(900)} Return policy (US): 30 days.`;
+    window.document.body.append(deepText);
+    const found = await send({ type: 'fta:execute', action: { type: 'find', query: 'POLICY (us)' } });
+    assert.equal(found.ok, true);
+    assert.match(found.observation, /30 days/);
+    const literal = await send({ type: 'fta:execute', action: { type: 'find', query: '.*' } });
+    assert.match(literal.observation, /No literal match/);
+
     // 7. scroll + wait
     await send({ type: 'fta:execute', action: { type: 'scroll', direction: 'down', amount: 500 } });
     assert.equal(window.__scrolled.top, 500);

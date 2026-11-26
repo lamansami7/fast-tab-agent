@@ -392,6 +392,7 @@ if (JSDOM) {
       ...currentTask,
       status: 'done',
       phase: 'done',
+      resultOrigin: 'https://shop.example.com',
       answer: 'This page sells running shoes.\n\nPrices start at $59.',
       steps: [
         {
@@ -418,6 +419,14 @@ if (JSDOM) {
     assert.equal(savedChat.messages[1].status, 'done');
     assert.match(savedChat.messages[1].text, /running shoes/);
     assert.equal('apiKey' in savedChat.messages[1], false);
+
+    const followUp = findText('.message-tool', 'Ask a follow-up');
+    assert.ok(followUp);
+    followUp.click();
+    assert.equal($('#followUpBar').hidden, false);
+    assert.equal($('#taskMode').value, 'read');
+    $('#cancelFollowUp').click();
+    assert.equal($('#followUpBar').hidden, true);
 
     // 6. provider errors are actionable and marked failed
     $('#goalInput').value = 'Trigger a provider error';
@@ -484,6 +493,7 @@ if (JSDOM) {
     assert.ok(visible($('#viewMain')));
     assert.equal($('#tabTitle').textContent, 'Docs');
     assert.equal($('#tabHost').textContent, 'docs.example.org');
+    assert.equal($('#targetMode').textContent, 'PINNED TAB');
     assert.equal($('#tabPermBtn').dataset.state, 'granted');
 
     // 9. restricted and hidden tabs explain themselves instead of breaking
@@ -501,6 +511,12 @@ if (JSDOM) {
     assert.match($('#toast').textContent, /still hides this tab.s address/i);
     $('#tabsDone').click();
     assert.ok(visible($('#viewMain')));
+
+    $('#tabsBtn').click();
+    $('#followActiveBtn').click();
+    await delay(80);
+    assert.equal($('#targetMode').textContent, 'ACTIVE TAB');
+    assert.notEqual($('#tabHost').textContent, 'docs.example.org');
 
     // 10. settings: provider panel, behaviour, theme, access list
     $('#settingsBtn').click();

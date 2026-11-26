@@ -77,7 +77,11 @@ const state = {
   tabs: [],
   tabsMeta: { total: 0, truncated: false, hasTabsPermission: false, canRequestTabs: true },
   activeTabId: null,
+  windowId: null,
+  tabRefreshSequence: 0,
   selectedTabId: null,
+  followActiveTab: true,
+  priorTaskId: null,
   tabFilter: '',
   chat: [],
   chatStore: createChatStore(globalThis.chrome?.storage?.local || null),
@@ -326,6 +330,7 @@ const ACTION_ACTIVITY = {
   back: 'Going back…',
   wait: 'Waiting for the page…',
   extract: 'Reading page content…',
+  find: 'Searching page text…',
 };
 
 const PHASE_ACTIVITY = {
@@ -428,7 +433,19 @@ function renderStatus() {
   renderComposer();
 }
 
+function canReferenceTask(task = state.task) {
+  const tab = selectedTab();
+  if (!task?.resultOrigin || task.status !== 'done' || task.limitReached || !task.answer || task.tabId !== tab?.id) return false;
+  try { return new URL(tab.url).origin === task.resultOrigin; } catch { return false; }
+}
+
+function renderFollowUp() {
+  if (state.priorTaskId && (!canReferenceTask() || state.priorTaskId !== state.task?.id)) state.priorTaskId = null;
+  $('#followUpBar').hidden = !state.priorTaskId;
+}
+
 function renderComposer() {
+  renderFollowUp();
   const running = state.task?.status === 'running';
   const runBtn = $('#runBtn');
   const stopBtn = $('#stopBtn');
@@ -443,6 +460,7 @@ function renderComposer() {
 
 function renderTabBar() {
   const tab = selectedTab();
+  $('#targetMode').textContent = state.task?.status === 'running' ? 'TASK TAB' : state.followActiveTab ? 'ACTIVE TAB' : 'PINNED TAB';
   const titleNode = $('#tabTitle');
   const hostNode = $('#tabHost');
   const permNode = $('#tabPermBtn');
@@ -539,6 +557,7 @@ function friendlyStepDescription(description) {
   if (text === 'browser back') return 'Went back';
   if (text.startsWith('wait ')) return 'Waited for the page';
   if (text.startsWith('extract ')) return 'Read page content';
+  if (text.startsWith('find ')) return 'Searched page text';
   if (text.startsWith('press ')) return 'Pressed a key';
   return text.length > 80 ? `${text.slice(0, 79)}…` : text;
 }
@@ -667,12 +686,29 @@ function renderMessage(message) {
       }
     });
     body.append(copy);
+    if (message.taskId && message.taskId === state.task?.id && canReferenceTask()) {
+      const follow = el('button', { class: 'message-tool', type: 'button', text: 'Ask a follow-up' });
+      follow.addEventListener('click', () => {
+        if (message.taskId !== state.task?.id || !canReferenceTask()) return;
+        state.priorTaskId = message.taskId;
+        $('#taskMode').value = 'read';
+        $('#taskMode').dispatchEvent(new Event('change'));
+        renderComposer();
+        $('#goalInput').focus();
+      });
+      body.append(follow);
+    }
   }
   article.append(avatar, body);
   return article;
 }
 
 const messageNodes = new Map();
+
+function syncChatJump() {
+  const log = $('#chatLog');
+  $('#chatJump').hidden = log.scrollHeight - log.scrollTop - log.clientHeight < 100;
+}
 
 function renderMessages() {
   const log = $('#chatLog');
@@ -687,7 +723,7 @@ function renderMessages() {
   }
   let cursor = messages.firstChild;
   for (const message of state.chat) {
-    const key = JSON.stringify(message);
+    const key = JSON.stringify([message, message.taskId === state.task?.id && canReferenceTask()]);
     let entry = messageNodes.get(message.id);
     if (entry?.key !== key) {
       const node = renderMessage(message);
@@ -705,8 +741,9 @@ function renderMessages() {
   if (nearBottom || state.chat.length <= 2) {
     requestAnimationFrame(() => {
       log.scrollTop = log.scrollHeight;
+      syncChatJump();
     });
-  }
+  } else syncChatJump();
 }
 
 function renderChatMeta() {
@@ -760,6 +797,7 @@ function applyTask(task, { createIfMissing = false } = {}) {
 
   if (task.status !== 'running') {
     state.busyStarting = false;
+    if (state.followActiveTab) state.selectedTabId = state.activeTabId ?? state.selectedTabId;
     persistChatNow();
   } else {
     scheduleChatSave();
@@ -776,6 +814,7 @@ async function startTask() {
   const input = $('#goalInput');
   const goal = input.value.trim();
   const mode = $('#taskMode').value;
+  const priorTaskId = state.priorTaskId;
   if (!goal) {
     input.focus();
     return;
@@ -840,9 +879,15 @@ async function startTask() {
   });
 
   try {
-    const task = await send('task:start', { goal, tabId: fresh.id, mode });
+    const task = await send('task:start', { goal, tabId: fresh.id, mode, windowId: state.windowId, ...(priorTaskId ? { priorTaskId } : {}) }, { retries: 0 });
+    state.priorTaskId = null;
     applyTask(task);
   } catch (error) {
+    if (!input.value) { input.value = goal; autosizeInput(); }
+    if (error.code === 'tab_permission_required') {
+      fresh.permission = 'needed';
+      renderTabBar();
+    }
     assistantMessage.status = 'error';
     assistantMessage.phase = 'error';
     assistantMessage.error = {
@@ -850,6 +895,7 @@ async function startTask() {
       hint: error.hint || '',
     };
     state.busyStarting = false;
+    if (state.followActiveTab) state.selectedTabId = state.activeTabId ?? state.selectedTabId;
     persistChatNow();
     renderMessages();
     renderStatus();
@@ -943,6 +989,10 @@ async function ensureTabAccess(tab) {
 }
 
 async function selectTab(tab) {
+  if (state.task?.status === 'running' || state.busyStarting) {
+    toast('Finish or stop the current task before changing its target tab.', 'warn');
+    return;
+  }
   if (!tab) return;
   if (tab.restricted || !tab.supported) {
     toast(tab.reason || 'This page cannot be read by the extension.', 'error');
@@ -967,6 +1017,7 @@ async function selectTab(tab) {
     const granted = await ensureTabAccess(tab);
     if (!granted) return;
   }
+  state.followActiveTab = false;
   state.selectedTabId = tab.id;
   renderTabBar();
   renderStatus();
@@ -1062,7 +1113,10 @@ function renderTabs() {
 }
 
 async function refreshTabInfo({ quiet = false } = {}) {
-  const [infoResult, tabsResult] = await Promise.allSettled([send('app:info'), send('tabs:list')]);
+  const sequence = ++state.tabRefreshSequence;
+  const scope = { windowId: state.windowId };
+  const [infoResult, tabsResult] = await Promise.allSettled([send('app:info', scope), send('tabs:list', scope)]);
+  if (sequence !== state.tabRefreshSequence) return;
   const info = infoResult.status === 'fulfilled' ? infoResult.value : null;
   const tabsData = tabsResult.status === 'fulfilled' ? tabsResult.value : null;
 
@@ -1089,7 +1143,9 @@ async function refreshTabInfo({ quiet = false } = {}) {
     state.tabsMeta = { total: 1, truncated: false, hasTabsPermission: false, canRequestTabs: false };
   }
 
-  if (!state.selectedTabId || !state.tabs.some((tab) => tab.id === state.selectedTabId)) {
+  const targetExists = state.tabs.some((tab) => tab.id === state.selectedTabId);
+  if (!targetExists && state.task?.status !== 'running') state.followActiveTab = true;
+  if (state.task?.status !== 'running' && !state.busyStarting && (state.followActiveTab || !targetExists)) {
     state.selectedTabId = state.activeTabId ?? state.tabs[0]?.id ?? null;
   }
 
@@ -1098,6 +1154,7 @@ async function refreshTabInfo({ quiet = false } = {}) {
   renderPreferences();
   renderChatMeta();
   renderStatus();
+  renderMessages();
 
   if (!quiet && infoResult.status === 'rejected' && tabsResult.status === 'rejected') {
     toast('Could not read the current tab. Reload the extension and try again.', 'error');
@@ -1189,6 +1246,8 @@ async function renderSiteAccess() {
 }
 
 async function clearConversation() {
+  state.priorTaskId = null;
+  renderFollowUp();
   if (state.task?.status === 'running') {
     toast('Stop the running task before clearing the conversation.', 'warn');
     return;
@@ -1903,7 +1962,12 @@ async function reconcileTask() {
       return;
     }
     applyTask(task, { createIfMissing: task.status === 'running' });
-    if (task.status === 'running') setTimeout(() => void send('task:state').then((next) => next && applyTask(next)), 800);
+    if (task.status === 'running') setTimeout(() => {
+      if (state.task?.id !== task.id || state.task.status !== 'running') return;
+      void send('task:state').then((next) => {
+        if (next?.id === task.id && state.task?.id === task.id && state.task.status === 'running') applyTask(next);
+      }).catch(() => {});
+    }, 800);
   } catch {
     renderStatus();
   }
@@ -1933,7 +1997,21 @@ function bindEvents() {
     }
   });
   chrome.tabs?.onRemoved?.addListener(scheduleTabRefresh);
-  chrome.tabs?.onActivated?.addListener(scheduleTabRefresh);
+  chrome.tabs?.onActivated?.addListener(({ windowId }) => {
+    if (state.windowId == null || windowId === state.windowId) scheduleTabRefresh();
+  });
+  $('#chatLog').addEventListener('scroll', syncChatJump, { passive: true });
+  $('#jumpLatestBtn').addEventListener('click', () => {
+    const log = $('#chatLog');
+    log.scrollTop = log.scrollHeight;
+    syncChatJump();
+    $('#goalInput').focus({ preventScroll: true });
+  });
+  $('#cancelFollowUp').addEventListener('click', () => {
+    state.priorTaskId = null;
+    renderFollowUp();
+    $('#goalInput').focus();
+  });
   $('#taskMode').addEventListener('change', () => {
     $('#modeNote').textContent = $('#taskMode').value === 'read'
       ? 'No clicks, typing, or navigation' : 'Can interact with this tab';
@@ -1955,6 +2033,14 @@ function bindEvents() {
   });
   $('#tabsBack').addEventListener('click', () => showView('main'));
   $('#tabsDone').addEventListener('click', () => showView('main'));
+  $('#followActiveBtn').addEventListener('click', () => {
+    state.followActiveTab = true;
+    if (state.task?.status !== 'running' && !state.busyStarting) state.selectedTabId = state.activeTabId;
+    renderTabBar();
+    renderStatus();
+    showView('main');
+    void refreshTabInfo({ quiet: true });
+  });
   $('#tabsRefreshBtn').addEventListener('click', () => {
     void refreshTabInfo({ quiet: true }).then(() => {
       renderTabs();
@@ -2010,6 +2096,10 @@ function bindEvents() {
 
   for (const suggestion of document.querySelectorAll('.suggestion')) {
     suggestion.addEventListener('click', () => {
+      $('#taskMode').value = 'read';
+      $('#taskMode').dispatchEvent(new Event('change'));
+      state.priorTaskId = null;
+      renderFollowUp();
       input.value = suggestion.dataset.prompt || suggestion.textContent || '';
       autosizeInput();
       renderComposer();
@@ -2191,7 +2281,12 @@ async function init() {
   renderTabBar();
   renderMessages();
 
-  state.chat = await state.chatStore.load();
+  const [chat, panelWindow] = await Promise.all([
+    state.chatStore.load(),
+    chrome.windows?.getCurrent?.().catch(() => null),
+  ]);
+  state.chat = chat;
+  state.windowId = panelWindow?.id ?? null;
   renderMessages();
   renderChatMeta();
 

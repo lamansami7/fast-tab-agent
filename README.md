@@ -8,7 +8,7 @@ The extension service worker handles AI requests and provider credentials. The p
 
 ## What it does
 
-- **Chat with the page.** A conversation view with clear user/assistant messages, timestamps, live task status, action history and actionable errors. Conversations survive closing the popup and can be cleared from Settings.
+- **Chat with the page.** A conversation view with clear user/assistant messages, timestamps, live task status, action history and actionable errors. Conversations survive closing the side panel and can be cleared from Settings.
 - **Choose the tab.** A tab picker lists open tabs with title, domain, favicon/initial, active/selected state and a permission badge. Search, refresh, select another tab, or grant access to it. Restricted pages explain why they cannot be used.
 - **Read the page.** Visible text, headings, links and interactive controls are extracted into a bounded snapshot. The agent can summarize, answer questions, find sections, forms and links.
 - **Act on the page.** Click, type, select, press allowlisted keys, scroll, navigate, go back, wait, extract text or finish. Targets are rechecked before every action and the page is re-read afterwards.
@@ -22,7 +22,9 @@ The extension does not execute JavaScript returned by a model and never exposes 
 1. Clone or download this repository.
 2. Open `chrome://extensions` and enable **Developer mode**.
 3. Select **Load unpacked** and choose the directory containing `manifest.json`.
-4. Pin Fast Tab Agent to the toolbar if you want quick access.
+4. Pin Fast Tab Agent to the toolbar and click its icon to open the Chrome side panel. The panel stays open while you click or type on the page. Use Chrome’s side-panel controls to close it, resize it, or change which edge it appears on.
+
+The workspace follows the active tab in its own Chrome window by default. Choose a tab in **Tabs** to pin its context, or choose **Follow active tab** to switch back. A running task stays on the tab it started on. Switching tabs does not give the extension site access automatically; Chrome may still ask for permission before a run.
 
 Chrome 116 or newer is required. There is no build step and no production dependencies.
 
@@ -30,7 +32,7 @@ Chrome 116 or newer is required. There is no build step and no production depend
 
 1. Edit the files.
 2. Open `chrome://extensions`, find Fast Tab Agent, and press the reload icon.
-3. Close and reopen the popup. If a task was running, it is marked interrupted; start it again.
+3. Close and reopen the side panel. If a task was running, it is marked interrupted; start it again.
 4. If you changed the content script, also reload the test page (press F5) so the new content script is injected.
 
 ## The interface
@@ -58,7 +60,8 @@ Chrome 116 or newer is required. There is no build step and no production depend
 - **Tab bar:** the tab the agent will work on, its domain, a `Page access` or `Allow access` badge, a refresh action, and the tab count. Clicking the title opens the picker.
 - **Chat:** empty-state guidance and four starter prompts until the first message; thereafter a scrollable history. Long answers wrap and the view stays pinned to the newest content unless you scroll up.
 - **Run monitor:** shows the current phase, steps used, and a collapsible working plan. The activity log distinguishes verified outcomes from dispatched actions and indicates failures.
-- **Conversation controls:** reuse a previous request as a draft or copy an answer. Reusing never resends automatically.
+- **Conversation controls:** reuse a previous request as a draft, copy an answer, or jump back to the latest activity. Reusing never resends automatically. If sending fails to start, the composer restores the request.
+- **Ask a follow-up:** explicitly attach the last completed request and its answer, in bounded form, on the same tab and origin. This defaults to Read only. Remove the attachment to start fresh. The provider gets this context only when you send; the extension does not send the full chat transcript.
 - **Composer:** multiline input with autosizing (capped), a send button that is disabled for empty input or when the agent is running, and a stop button while a task is active.
 - **Settings:** two tabs. **AI provider** manages providers, models, keys, endpoints, connection tests and activation. **Behaviour** holds the theme (Auto/Light/Dark), maximum steps, in-page status pill, JSON mode, private-LAN HTTP preference, a list of granted website/endpoint hosts with **Revoke**, and **Clear conversation**.
 
@@ -68,7 +71,7 @@ Light and dark themes follow the operating system by default. Focus rings, label
 
 ### The selected tab
 
-The popup shows the active tab when it opens. The agent works only on the **currently selected tab**, and only after you send a request. Nothing reads page content in the background, and switching the picker does not read the new tab until you run a task.
+The side panel shows the active tab when it opens. The agent works only on the **currently selected tab**, and only after you send a request. Nothing reads page content in the background, and switching the picker does not read the new tab until you run a task.
 
 For the active tab, the extension relies on `activeTab` (temporary access granted when you open the extension) plus `scripting` for on-demand injection. If you select a different tab, Chrome asks for access to that tab's exact site. Denying the request leaves the previous selection in place.
 
@@ -136,6 +139,7 @@ Phases you may see: `Getting ready`, `Reading the page`, `Thinking`, `Clicking a
 | `back` | Browser history back | Waits for the tab, checks document or URL change, then reads the destination |
 | `wait` | Waits briefly for the page to settle | Then re-reads the page |
 | `extract` | Returns text from the page or an element | Bounded, with explicit truncation notes |
+| `find` | Searches for a literal phrase in up to 180,000 characters of rendered page text | Returns up to three excerpts without scrolling or clicking; works in Read only mode |
 | `done` | Ends the task with an answer | Marks the step complete and clears the running state |
 
 The page agent re-validates every target and never receives raw HTML, scripts or selectors from the model. It works from stable element ids assigned during the snapshot, and the snapshot includes accessible names, roles, labels, visible text and DOM attributes as identification hints. Password fields are excluded; one-time-code, password, card and other secret fields are marked and cannot be typed into. Typing into ordinary fields (including email) is allowed, but the value is not echoed back in the observation.
@@ -318,7 +322,7 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 - [ ] Start a multi-step task and press **Stop** immediately. The UI changes to Stopping/Stopped, the page stops changing, and the stop button disappears.
 - [ ] Start a task, press Stop while the model is thinking, then wait 30 seconds. No late answer or action appears.
 - [ ] Start a task, press Stop, then immediately start another. The new task runs and the old one cannot overwrite its messages.
-- [ ] Close and reopen the popup during a task. Reopening shows the current state consistently; Stop still works.
+- [ ] Close and reopen the side panel during a task. Reopening shows the current state consistently; Stop still works.
 
 ### 11. Test restricted pages
 
