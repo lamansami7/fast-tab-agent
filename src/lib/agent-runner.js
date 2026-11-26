@@ -34,6 +34,7 @@ function safeEmit(onEvent, event) {
 /**
  * @param {{
  *   goal: string,
+ *   mode?: 'act' | 'read',
  *   maxSteps: number,
  *   callModel: Function,
  *   getSnapshot: Function,
@@ -46,6 +47,7 @@ function safeEmit(onEvent, event) {
 export async function runAgentTask(params) {
   const {
     goal,
+    mode = 'act',
     maxSteps,
     callModel,
     getSnapshot,
@@ -63,8 +65,7 @@ export async function runAgentTask(params) {
   let answer = '';
   let plan = [];
   let lastError = null;
-  let lastActionFingerprint = '';
-  let stagnantRepeats = 0;
+  const visits = new Map();
   let recoveryNote = '';
 
   const isCancelled = () => {
@@ -80,6 +81,7 @@ export async function runAgentTask(params) {
 
   safeEmit(onEvent, { phase: 'start', goal, maxSteps: stepBudget });
 
+  const systemPrompt = buildSystemPrompt();
   for (let step = 1; step <= stepBudget; step += 1) {
     if (isCancelled()) return { status: 'stopped', steps, answer, plan };
 
@@ -88,6 +90,7 @@ export async function runAgentTask(params) {
     try {
       snapshot = await getSnapshot();
     } catch (error) {
+      if (isCancelled()) return { status: 'stopped', steps, answer, plan };
       lastError = new ProviderError(
         'page_unavailable',
         error?.message || 'Could not read the current tab.',
@@ -101,10 +104,10 @@ export async function runAgentTask(params) {
     safeEmit(onEvent, { phase: 'thinking', step: step });
 
     const messages = [
-      { role: 'system', content: buildSystemPrompt() },
+      { role: 'system', content: systemPrompt },
       {
         role: 'user',
-        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps: stepBudget, note: recoveryNote }),
+        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps: stepBudget, note: recoveryNote, plan, mode }),
       },
     ];
 
@@ -192,21 +195,20 @@ export async function runAgentTask(params) {
     const action = response.action;
     // Detect identical actions against an effectively unchanged page.
     const snapshotFingerprint = JSON.stringify({
-      url: snapshot?.url || '', title: snapshot?.title || '',
-      elements: (snapshot?.elements || []).map((e) => [e.id, e.tag, e.label, e.placeholder, e.disabled]),
+      url: snapshot?.url || '', scroll: Math.round((snapshot?.scroll?.y || 0) / 40), title: snapshot?.title || '',
+      elements: (snapshot?.elements || []).map((e) => [e.id, e.tag, e.label, e.value, e.checked, e.disabled, e.inViewport]),
       text: String(snapshot?.text || '').slice(0, 500),
     });
     const actionFingerprint = `${snapshotFingerprint}::${JSON.stringify(action)}`;
-    if (actionFingerprint === lastActionFingerprint) stagnantRepeats += 1;
-    else stagnantRepeats = 0;
-    lastActionFingerprint = actionFingerprint;
-    if (stagnantRepeats >= MAX_STAGNANT_REPEAT) {
-      const message = 'Stopped because the agent repeated the same action on an unchanged page. Try a different approach or take control manually.';
+    const repeats = (visits.get(actionFingerprint) || 0) + 1;
+    visits.set(actionFingerprint, repeats);
+    if (repeats > MAX_STAGNANT_REPEAT) {
+      const message = 'Stopped a repeated action cycle. Review the activity, then try a narrower request or take over manually.';
       safeEmit(onEvent, { phase: 'error', error: message });
-      return { status: 'error', steps, answer: message, plan, error: message, stalled: true };
+      return { status: 'error', steps, answer: message, plan, error: { message }, stalled: true };
     }
-    recoveryNote = stagnantRepeats > 0
-      ? 'Your last action appears to have been repeated on an unchanged page. Choose a different action, inspect or scroll, or explain the blocker; do not repeat it.'
+    recoveryNote = repeats > 1
+      ? 'This action has already been tried in this page state. Use a different approach or report the blocker.'
       : '';
     if (!action || !ACTION_TYPES.includes(action.type)) {
       const error = new ProviderError(ERROR_CODES.invalid_model_output, 'The model returned no action.');
@@ -220,31 +222,40 @@ export async function runAgentTask(params) {
     safeEmit(onEvent, {
       phase: 'action',
       step,
-      action,
+      plan,
+      action: { type: action.type, ...(action.elementId ? { elementId: action.elementId } : {}) },
       description: describeAction(action),
     });
 
     let outcome;
     try {
-      outcome = await executeAction(action);
+      outcome = mode === 'read' && !['extract', 'wait'].includes(action.type)
+        ? { ok: false, observation: 'Read-only mode blocked the action. Answer from this page without changing it.' }
+        : await executeAction(action, snapshot);
     } catch (error) {
       outcome = { ok: false, observation: error?.message || 'The action could not be performed.' };
     }
 
-    const ok = outcome?.ok !== false;
+    const ok = outcome?.ok === true;
     const observation = typeof outcome?.observation === 'string' ? outcome.observation : '';
 
     pushStep({
       step,
       thought: response.thought,
       plan,
-      action,
       description: describeAction(action),
       ok,
       observation,
     });
     history.push({ step, action, ok, observation, error: ok ? '' : observation });
 
+    if (isCancelled()) return { status: 'stopped', steps, answer, plan };
+    if (outcome?.halt) {
+      const error = { message: observation, hint: 'Review the selected tab before starting another task.' };
+      safeEmit(onEvent, { phase: 'error', error });
+      return { status: 'error', steps, answer, plan, error };
+    }
+    if (!ok) recoveryNote = 'The previous action failed. Inspect the fresh snapshot and choose a different target or method; do not assume the goal was completed.';
     if (ok) consecutiveFailures = 0;
     else consecutiveFailures += 1;
 

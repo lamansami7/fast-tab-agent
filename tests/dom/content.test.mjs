@@ -38,7 +38,7 @@ if (JSDOM) {
         <button id="disabled" type="button" disabled>Disabled control</button>
         <button id="delete" type="button">Delete account</button>
         <a id="link" href="/cart">Cart</a>
-        <select id="size"><option value="s">Small</option><option value="l">Large</option></select>
+        <div id="panel" style="overflow-y:auto"><select id="size"><option value="s">Small</option><option value="l">Large</option></select></div>
         <button id="hidden" style="display:none">Hidden button</button>
         <div aria-hidden="true"><button id="aria">Aria hidden</button></div>
         <textarea id="notes" placeholder="Notes"></textarea>
@@ -96,6 +96,7 @@ if (JSDOM) {
     const listener = window.__listener;
     assert.ok(listener, 'content script registered a message listener');
 
+    let context;
     const send = (message) =>
       new Promise((resolve) => {
         let done = false;
@@ -105,7 +106,7 @@ if (JSDOM) {
             resolve(value);
           }
         };
-        listener(message, {}, sendResponse);
+        listener(message.type === 'fta:execute' ? { context, ...message } : message, {}, sendResponse);
         setTimeout(() => {
           if (!done) {
             done = true;
@@ -121,6 +122,7 @@ if (JSDOM) {
 
     // 2. snapshot
     const snapshot = (await send({ type: 'fta:snapshot' })).snapshot;
+    context = snapshot.context;
     assert.equal(snapshot.title, 'Shop');
     assert.ok(snapshot.elements.length >= 5);
     const byLabel = (text) => snapshot.elements.find((element) => (element.label || '').includes(text));
@@ -164,7 +166,20 @@ if (JSDOM) {
     });
     assert.equal(clickResult.ok, true);
     assert.equal(clicks, 1);
-    assert.match(clickResult.observation, /Clicked/);
+    assert.match(clickResult.observation, /Dispatched click/);
+
+    const staleDocument = await send({ type: 'fta:execute', context: { ...context, documentToken: 'other' }, action: { type: 'click', elementId: searchButton.id } });
+    assert.equal(staleDocument.ok, false);
+    const button = window.document.getElementById('go');
+    window.document.elementFromPoint = () => window.document.body;
+    const covered = await send({ type: 'fta:execute', action: { type: 'click', elementId: searchButton.id } });
+    assert.match(covered.observation, /covered/);
+    delete window.document.elementFromPoint;
+    button.textContent = 'Replaced meaning';
+    const staleTarget = await send({ type: 'fta:execute', action: { type: 'click', elementId: searchButton.id } });
+    assert.equal(staleTarget.ok, false);
+    button.textContent = 'Search now';
+    assert.equal(clicks, 1);
 
     const disabledId = byLabel('Disabled control').id;
     const disabledResult = await send({
@@ -204,6 +219,13 @@ if (JSDOM) {
     });
     assert.equal(window.document.getElementById('q').value, 'running shoes red');
 
+    const form = window.document.querySelector('form');
+    let submissions = 0;
+    form.addEventListener('submit', (event) => { event.preventDefault(); submissions += 1; });
+    const submitted = await send({ type: 'fta:execute', action: { type: 'type', elementId: searchInput.id, text: 'trail shoes', submit: true } });
+    assert.equal(submitted.ok, true);
+    assert.equal(submissions, 1, 'low-impact GET forms use native submission');
+
     // Ordinary contact fields remain fillable, but their value is not echoed.
     const emailType = await send({
       type: 'fta:execute',
@@ -221,6 +243,12 @@ if (JSDOM) {
     assert.equal(otpType.ok, false);
     assert.match(otpType.observation, /sensitive field/i);
     assert.equal(window.document.getElementById('otp').value, '');
+
+    const q = window.document.getElementById('q');
+    q.addEventListener('input', () => { q.value = ''; }, { once: true });
+    const rejected = await send({ type: 'fta:execute', action: { type: 'type', elementId: searchInput.id, text: 'rejected input' } });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.observation, /rejected/);
 
     // 5. select by visible text
     const selectResult = await send({
@@ -242,6 +270,13 @@ if (JSDOM) {
       action: { type: 'extract', elementId: cartLink.id },
     });
     assert.equal(extractResult.observation, 'Cart');
+
+    const panel = window.document.getElementById('panel');
+    Object.defineProperties(panel, { scrollHeight: { value: 1000 }, clientHeight: { value: 100 } });
+    panel.scrollBy = ({ top }) => { panel.scrollTop += top; };
+    const panelScroll = await send({ type: 'fta:execute', action: { type: 'scroll', elementId: sizeSelect.id, amount: 200 } });
+    assert.equal(panelScroll.ok, true);
+    assert.equal(panel.scrollTop, 200);
 
     // 7. scroll + wait
     await send({ type: 'fta:execute', action: { type: 'scroll', direction: 'down', amount: 500 } });

@@ -183,3 +183,11 @@ test('system prompt demands raw JSON and a fixed action vocabulary', () => {
   }
   assert.match(prompt, /Never request, reveal, or transmit API keys, passwords/);
 });
+
+test('panel scrolling requires a target from the current snapshot', () => {
+  const snapshot = makeSnapshot();
+  const good = validateAgentResponse({ action: { type: 'scroll', elementId: 1, amount: 400 } }, snapshot);
+  assert.equal(good.ok, true);
+  assert.equal(good.response.action.elementId, 1);
+  assert.equal(validateAgentResponse({ action: { type: 'scroll', elementId: 999 } }, snapshot).ok, false);
+});

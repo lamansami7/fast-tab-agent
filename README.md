@@ -2,9 +2,9 @@
 
 Fast Tab Agent is a Manifest V3 Chrome extension that turns the tab you choose into a conversational AI workspace. Ask a question, request a summary, or give the agent a short multi-step task; it reads a bounded snapshot of the page, plans one action at a time, executes it, checks the result, and reports back in a chat interface.
 
-AI requests and provider credentials stay in the extension service worker. The page agent receives a sanitized snapshot and validated actions — never provider records or API keys.
+The extension service worker handles AI requests and provider credentials. The page agent sends a bounded snapshot to the worker and receives validated actions — never provider records or API keys. Relevant page content is sent to your configured provider per request.
 
-**Version 1.1** is a chat-first redesign with real tab access, per-site permissions, live progress, reliable cancellation, light/dark themes and a persistent conversation.
+**Choose Read only** for analysis without clicks, typing, scrolling, or navigation. Use **Browser actions** when you want the agent to interact with the selected tab. The extension enforces the mode independently of what the model proposes.
 
 ## What it does
 
@@ -57,6 +57,8 @@ Chrome 116 or newer is required. There is no build step and no production depend
 - **Header:** product name, a status line (`Ready`, `Working on a tab`, `Needs setup`), the active provider and a settings button.
 - **Tab bar:** the tab the agent will work on, its domain, a `Page access` or `Allow access` badge, a refresh action, and the tab count. Clicking the title opens the picker.
 - **Chat:** empty-state guidance and four starter prompts until the first message; thereafter a scrollable history. Long answers wrap and the view stays pinned to the newest content unless you scroll up.
+- **Run monitor:** shows the current phase, steps used, and a collapsible working plan. The activity log distinguishes verified outcomes from dispatched actions and indicates failures.
+- **Conversation controls:** reuse a previous request as a draft or copy an answer. Reusing never resends automatically.
 - **Composer:** multiline input with autosizing (capped), a send button that is disabled for empty input or when the agent is running, and a stop button while a task is active.
 - **Settings:** two tabs. **AI provider** manages providers, models, keys, endpoints, connection tests and activation. **Behaviour** holds the theme (Auto/Light/Dark), maximum steps, in-page status pill, JSON mode, private-LAN HTTP preference, a list of granted website/endpoint hosts with **Revoke**, and **Clear conversation**.
 
@@ -119,19 +121,19 @@ Each request is sent once. The model returns one action per turn from a fixed vo
 
 Phases you may see: `Getting ready`, `Reading the page`, `Thinking`, `Clicking an element`, `Typing into a field`, `Scrolling`, `Waiting for the page`, `Finishing`, plus `Completed`, `Stopped`, `Failed`, `Interrupted` and `Step limit reached`. Only real events are shown; the interface never reports a successful action that failed.
 
-**Stop** immediately marks the task stopping, prevents further actions, aborts the in-flight page action where possible, and settles the task as stopped when the worker acknowledges. A late model response cannot resume a stopped task or overwrite a newer one; starting a new task while another is active is rejected in the background, not just hidden in the UI.
+**Stop** immediately marks the task stopping, prevents further actions, aborts the model request, and settles the task as stopped when the worker acknowledges. An action already dispatched to the page cannot be undone; check the tab if you stop during an action. A late model response cannot resume a stopped task or overwrite a newer one; starting a new task while another is active is rejected in the background, not just hidden in the UI.
 
 ## Browser actions
 
 | Action | What it does | Verification |
 | --- | --- | --- |
-| `click` | Clicks a visible, enabled element by its snapshot id | Rechecks the element, scrolls it into view, then reports the resulting page state |
+| `click` | Clicks a visible, enabled element by its snapshot id | Rechecks document and control identity, performs hit testing, and verifies native toggles. Other clicks report dispatch, not task success. |
 | `type` | Types into a supported text field, optionally pressing Enter | Rejects disabled/read-only/secret fields; reports whether the value was applied without echoing sensitive values |
-| `select` | Chooses an option in a real `<select>` by label or value | Fails if the option does not exist |
+| `select` | Chooses an option in a real `<select>` by label or value | Rejects disabled or ambiguous matches and checks the selection stuck |
 | `key` | Presses an allowlisted key (Enter, Escape, Tab, arrows, etc.) | Re-checks focus and page state |
-| `scroll` | Scrolls the page by a bounded amount | Returns the new position and visible content |
-| `navigate` | Opens an HTTP/HTTPS URL in the selected tab | Waits for the page and re-injects the agent |
-| `back` | Browser history back | Waits for the page and re-injects the agent |
+| `scroll` | Scrolls the document or the panel containing an optional target | Reports movement or a scroll boundary |
+| `navigate` | Opens an HTTP/HTTPS URL in the selected tab | Waits for the tab, checks document or URL change, then reads the destination |
+| `back` | Browser history back | Waits for the tab, checks document or URL change, then reads the destination |
 | `wait` | Waits briefly for the page to settle | Then re-reads the page |
 | `extract` | Returns text from the page or an element | Bounded, with explicit truncation notes |
 | `done` | Ends the task with an answer | Marks the step complete and clears the running state |
@@ -140,14 +142,15 @@ The page agent re-validates every target and never receives raw HTML, scripts or
 
 ### Consequential actions
 
-Actions whose control or form text suggests a purchase, payment, delete, send, publish, transfer, booking or account change trigger a confirmation dialog in the page. Reading and low-risk navigation do not. This detection is heuristic: it can miss a risky control or flag a harmless one. Review the tab and the confirmation; do not leave the agent unattended on sensitive sites.
+Actions whose control or form text suggests a purchase, payment, delete, send, publish, transfer, booking or account change trigger a confirmation dialog in the page. Direct cross-site navigation, external and new-window links, download links, native submit buttons, and POST form activation also require confirmation. Declining ends the run rather than letting the model retry. This detection is heuristic: it can miss a risky control or flag a harmless one. Review the tab and the confirmation; do not leave the agent unattended on sensitive sites.
 
 ### Execution limits
 
 - Maximum steps per request is configurable (1–20, default 8).
 - Page snapshots and prompts are bounded; truncation is stated in the prompt and the answer rather than silently dropping content.
-- Repeated identical failures end the task instead of looping.
-- Timeouts apply to provider requests and page actions.
+- Repeated failures and cycles on the same page state end the task. An interrupted action channel is never automatically replayed; inspect the selected tab before retrying.
+- Optional request parameters rejected by the model are skipped on later turns in the same run. Settings are not changed.
+- Provider requests, explicit navigation readiness checks, and wait actions use bounded time budgets.
 - A closed tab, denied permission, missing element, navigation, or page rewrite fails with an actionable message rather than a crash.
 
 ## Providers

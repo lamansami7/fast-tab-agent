@@ -155,6 +155,8 @@ function publicTask(task = currentTask) {
   return {
     id: task.id,
     goal: task.goal,
+    mode: task.mode,
+    plan: task.plan || [],
     status: task.status,
     phase: task.phase,
     steps: task.steps,
@@ -227,17 +229,17 @@ async function getActiveTab() {
   }
 }
 
-async function pingTab(tabId) {
+async function readPageIdentity(tabId) {
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: 'fta:ping' });
-    return response?.ok === true;
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'fta:ping' }, { frameId: 0 });
+    return response?.ok === true ? response : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 async function ensureInjected(tabId) {
-  if (await pingTab(tabId)) return true;
+  if (await readPageIdentity(tabId)) return true;
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: false },
@@ -258,7 +260,7 @@ async function ensureInjected(tabId) {
       { hint: 'Grant website access for this tab, reload the page, and try again.' },
     );
   }
-  const ready = await pingTab(tabId);
+  const ready = await readPageIdentity(tabId);
   if (!ready) {
     throw new ProviderError(
       ERROR_CODES.tab_unavailable,
@@ -421,10 +423,10 @@ async function tabsList() {
 
 async function sendToTab(tabId, message) {
   try {
-    return await chrome.tabs.sendMessage(tabId, message);
+    return await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
   } catch {
     await ensureInjected(tabId);
-    return await chrome.tabs.sendMessage(tabId, message);
+    return await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
   }
 }
 
@@ -436,12 +438,12 @@ async function sendToTab(tabId, message) {
  * short grace period, then require either a loading phase, a URL change, or a
  * generous timeout before accepting "complete".
  */
-async function waitForTabSettled(tabId, previousUrl, timeoutMs = 9000) {
+async function waitForTabSettled(tabId, previousUrl, signal, timeoutMs = 9000) {
   const startedAt = Date.now();
   await sleep(350);
   let sawLoading = false;
 
-  while (Date.now() - startedAt < timeoutMs) {
+  while (!signal?.aborted && Date.now() - startedAt < timeoutMs) {
     let tab = null;
     try {
       tab = await chrome.tabs.get(tabId);
@@ -456,33 +458,64 @@ async function waitForTabSettled(tabId, previousUrl, timeoutMs = 9000) {
     }
     await sleep(250);
   }
-  // Same-page navigations (e.g. in-page routers) may never flip status.
-  return true;
+  return false;
 }
 
-async function getSnapshot(tabId) {
-  const response = await sendToTab(tabId, { type: 'fta:snapshot' });
-  if (!response || response.ok !== true || !response.snapshot) {
-    throw new Error(response?.error || 'The page could not be read.');
-  }
-  return response.snapshot;
-}
-
-async function executeActionOnTab(tabId, action) {
-  let previousUrl = '';
-  if (action.type === 'navigate' || action.type === 'back') {
+async function getSnapshot(tabId, signal) {
+  // Reads are safe to retry while a document is being replaced. Mutations
+  // below deliberately do not share this retry path.
+  let reason = 'The page could not be read.';
+  for (let attempt = 0; attempt < 4 && !signal?.aborted; attempt += 1) {
     try {
-      previousUrl = (await chrome.tabs.get(tabId))?.url || '';
-    } catch {
-      previousUrl = '';
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.status === 'loading' && attempt < 3) {
+        reason = 'The selected tab is still loading.';
+      } else {
+        const response = await sendToTab(tabId, { type: 'fta:snapshot' });
+        if (response?.ok && response.snapshot) return response.snapshot;
+        reason = response?.error || reason;
+        if (!response?.retryable) break;
+      }
+    } catch (error) {
+      reason = error?.message || reason;
+      // Chrome permission errors and unsupported pages will not improve with delay.
+      if (error instanceof ProviderError) throw error;
+    }
+    if (attempt < 3) await sleep(180 * (attempt + 1));
+  }
+  throw new Error(reason);
+}
+
+async function executeActionOnTab(tabId, action, snapshot, signal) {
+  let response;
+  try {
+    // An interrupted channel can mean the click already caused navigation.
+    // Never re-inject and replay a possibly committed action.
+    response = await chrome.tabs.sendMessage(tabId, {
+      type: 'fta:execute', action, context: snapshot?.context,
+    }, { frameId: 0 });
+  } catch {
+    return { ok: false, halt: true, observation: 'Lost contact after dispatch. The action may already have happened; check the tab before retrying.' };
+  }
+  if (!response) return { ok: false, halt: true, observation: 'No action acknowledgement. Check the tab before retrying.' };
+  if (response.ok && (action.type === 'navigate' || action.type === 'back')) {
+    if (!await waitForTabSettled(tabId, snapshot?.url, signal)) {
+      return { ok: false, observation: 'Navigation did not settle in time. Inspect the current page before continuing.' };
+    }
+    if (snapshot?.context && !signal?.aborted) {
+      try {
+        await ensureInjected(tabId);
+        const next = await readPageIdentity(tabId);
+        if (!next) throw new Error('Page agent unavailable');
+        if (next.context?.documentToken === snapshot.context.documentToken && next.url === snapshot.url) {
+          return { ok: false, observation: 'No page or address change was detected after navigation.' };
+        }
+      } catch {
+        return { ok: false, halt: true, observation: 'The destination cannot be inspected. Check the selected tab and its site access.' };
+      }
     }
   }
-  const response = await sendToTab(tabId, { type: 'fta:execute', action });
-  if (action.type === 'navigate' || action.type === 'back') {
-    await waitForTabSettled(tabId, previousUrl);
-    await ensureInjected(tabId).catch(() => {});
-  }
-  return response || { ok: false, observation: 'The page did not respond.' };
+  return response;
 }
 
 /* ---------------------------------------------------------- task engine -- */
@@ -502,9 +535,8 @@ async function finishTask(outcome) {
   currentTask.error = outcome.error || null;
   currentTask.limitReached = Boolean(outcome.limitReached);
   currentTask.finishedAt = Date.now();
-      currentTask.phase = currentTask.status;
+  currentTask.phase = currentTask.status;
   currentTask.currentAction = null;
-  currentTask.currentActionLabel = '';
   currentTask.currentActionLabel = '';
   if (!currentTask.steps.length && Array.isArray(outcome.steps)) currentTask.steps = outcome.steps;
 
@@ -516,7 +548,7 @@ async function finishTask(outcome) {
     if (currentTask.status === TASK_STATUS.error) {
       sendHud(tabId, { running: false, tone: 'error', label: 'Fast Tab Agent · stopped with an error' });
     } else if (currentTask.status === TASK_STATUS.done) {
-      sendHud(tabId, { running: false, tone: 'done', label: 'Fast Tab Agent · task complete' });
+      sendHud(tabId, { running: false, tone: 'done', label: currentTask.limitReached ? 'Fast Tab Agent · step limit reached' : 'Fast Tab Agent · task complete' });
     } else {
       sendHud(tabId, { running: false, tone: 'done', label: 'Fast Tab Agent · stopped' });
     }
@@ -526,7 +558,7 @@ async function finishTask(outcome) {
   await persistTask();
 }
 
-async function startTask(goalInput, requestedTabId) {
+async function startTask(goalInput, requestedTabId, requestedMode) {
   if (startingTask) throw new Error('A task is already starting. Wait a moment.');
   if (currentTask && currentTask.status === TASK_STATUS.running) {
     throw new Error('A task is already running. Stop it first.');
@@ -566,6 +598,7 @@ async function startTask(goalInput, requestedTabId) {
     currentTask = {
       id: `task_${Date.now().toString(36)}`,
       goal,
+      mode: requestedMode === 'read' ? 'read' : 'act',
       status: TASK_STATUS.running,
       phase: 'starting',
       steps: [],
@@ -594,6 +627,7 @@ async function startTask(goalInput, requestedTabId) {
   const taskId = currentTask.id;
   const controller = abortController;
 
+  const omitOptionalParams = new Set();
   const callModel = async (messages) => {
     const result = await chatCompletion(provider, messages, {
       maxTokens: provider.maxTokens || settings.maxTokens,
@@ -601,9 +635,10 @@ async function startTask(goalInput, requestedTabId) {
       jsonMode: provider.useJsonMode || settings.jsonMode,
       allowPrivateHttp: settings.allowPrivateHttp,
       signal: controller.signal,
+      omitOptionalParams,
     });
     if (result.droppedParams?.length) {
-      console.info('Fast Tab Agent: model rejected optional params, continued without', result.droppedParams);
+      for (const param of result.droppedParams) omitOptionalParams.add(param);
     }
     return result;
   };
@@ -627,11 +662,13 @@ async function startTask(goalInput, requestedTabId) {
         break;
       case 'action':
         currentTask.phase = 'acting';
+        currentTask.plan = event.plan || [];
         currentTask.currentAction = event.action || null;
         currentTask.currentActionLabel = event.description || '';
         break;
       case 'step':
         pushStep(event.step);
+        currentTask.plan = event.step.plan || [];
         currentTask.phase = 'acting';
         currentTask.currentAction = null;
         currentTask.currentActionLabel = '';
@@ -657,10 +694,11 @@ async function startTask(goalInput, requestedTabId) {
     try {
       const outcome = await runAgentTask({
         goal,
+        mode: currentTask.mode,
         maxSteps: settings.maxSteps,
         callModel,
-        getSnapshot: () => getSnapshot(tab.id),
-        executeAction: (action) => executeActionOnTab(tab.id, action),
+        getSnapshot: () => getSnapshot(tab.id, controller.signal),
+        executeAction: (action, snapshot) => executeActionOnTab(tab.id, action, snapshot, controller.signal),
         onEvent,
         signal: controller.signal,
       });
@@ -857,7 +895,7 @@ const handlers = {
   'providers:models': (message) => providerModels(message),
   'settings:get': async () => ({ settings: await getSettings() }),
   'settings:save': (message) => saveSettings(message.settings || message.patch || {}).then((settings) => ({ settings })),
-  'task:start': (message) => startTask(message.goal, message.tabId),
+  'task:start': (message) => startTask(message.goal, message.tabId, message.mode),
   'task:stop': async () => ({ task: stopTask() }),
   'task:state': () => taskState(),
   'tabs:list': () => tabsList(),
