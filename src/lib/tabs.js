@@ -108,6 +108,60 @@ export function classifyTabUrl(raw) {
 }
 
 /**
+ * Explain why Chrome refused to start the page agent on a tab.
+ *
+ * `chrome.scripting.executeScript` reports every failure as one generic
+ * Error, so the raw message is the only way to tell a browser page apart from
+ * a site that simply has not been granted access yet. Getting this wrong told
+ * users to “grant website access” when the real problem was a chrome:// page.
+ *
+ * @param {unknown} rawMessage
+ * @returns {{code:string, message:string, hint:string}}
+ */
+export function classifyInjectionError(rawMessage) {
+  const detail = String(rawMessage || '').toLowerCase();
+
+  if (
+    detail.includes('cannot access a chrome') ||
+    detail.includes('cannot be scripted') ||
+    detail.includes('chrome web store') ||
+    detail.includes('extensions gallery')
+  ) {
+    return {
+      code: 'tab_restricted',
+      message: 'Chrome blocks extensions on this page, so it cannot be read.',
+      hint: 'Open a normal website, or use a different tab.',
+    };
+  }
+
+  if (detail.includes('no tab with id') || detail.includes('frame with id') || detail.includes('no frame')) {
+    return {
+      code: 'tab_unavailable',
+      message: 'The tab went away before the page agent could start.',
+      hint: 'Reload the page and try again.',
+    };
+  }
+
+  if (
+    detail.includes('permission') ||
+    detail.includes('cannot access contents') ||
+    detail.includes('manifest must request')
+  ) {
+    return {
+      code: 'tab_permission_required',
+      message: 'Chrome did not allow the page agent to start on this tab.',
+      hint: 'Grant website access for this tab, reload the page, and try again.',
+    };
+  }
+
+  return {
+    code: 'tab_unavailable',
+    message: 'The page agent could not start on this tab.',
+    hint: 'Reload the tab and try again. Some pages block extensions or replace their content while loading.',
+  };
+}
+
+/**
  * Narrowest Chrome origin pattern (scheme + host) for a page URL.
  * Returns null for URLs Chrome host permissions cannot cover.
  *

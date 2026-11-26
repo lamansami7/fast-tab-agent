@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  chooseInitialTabId,
+  classifyInjectionError,
   classifyTabUrl,
   filterTabs,
   isHttpUrl,
@@ -61,6 +63,26 @@ test('missing, malformed and unsupported URLs fail closed', () => {
   assert.equal(classifyTabUrl('ftp://example.com/file').code, 'restricted_scheme');
 });
 
+test('injection failures are explained as restricted, gone or unpermitted', () => {
+  const chromePage = classifyInjectionError('Cannot access a chrome:// URL');
+  assert.equal(chromePage.code, 'tab_restricted');
+  assert.match(chromePage.hint, /normal website/i);
+
+  const store = classifyInjectionError(
+    'Cannot access contents of the page. Extension manifest must request permission to access the respective host.',
+  );
+  assert.equal(store.code, 'tab_permission_required');
+  assert.match(store.hint, /Grant website access/i);
+
+  const closed = classifyInjectionError('No tab with id: 42');
+  assert.equal(closed.code, 'tab_unavailable');
+
+  const unexpected = classifyInjectionError('Error in invocation of scripting.executeScript');
+  assert.equal(unexpected.code, 'tab_unavailable');
+  assert.match(unexpected.message, /could not start/i);
+  assert.equal(classifyInjectionError(undefined).code, 'tab_unavailable');
+});
+
 test('origin patterns cover only http(s) hosts', () => {
   assert.equal(originPatternFor('https://example.com/a/b?q=1'), 'https://example.com/*');
   assert.equal(originPatternFor('http://localhost:3000/'), 'http://localhost/*');
@@ -88,6 +110,22 @@ test('tab filtering matches title and host, case-insensitively', () => {
   assert.deepEqual(filterTabs(tabs, 'example.org').map((tab) => tab.id), [2]);
   assert.equal(filterTabs(tabs, 'nothing-here').length, 0);
   assert.equal(filterTabs(null, 'x').length, 0);
+});
+
+test('the default tab avoids restricted browser pages', () => {
+  const tabs = [
+    { id: 1, title: 'Docs', url: 'https://docs.example.org/guide', supported: true, restricted: false },
+    { id: 2, title: 'Extensions', url: 'chrome://extensions', supported: false, restricted: true },
+    { id: 3, title: 'Shop', url: 'https://shop.example.com', supported: true, restricted: false },
+  ];
+  assert.equal(chooseInitialTabId(tabs, 2), 1);
+  assert.equal(chooseInitialTabId(tabs, 1), 1);
+  assert.equal(chooseInitialTabId(tabs, null), 1);
+  assert.equal(
+    chooseInitialTabId([{ id: 9, url: 'chrome://settings', supported: false, restricted: true }], 9),
+    9,
+  );
+  assert.equal(chooseInitialTabId([], null), null);
 });
 
 test('the picker puts the selected tab first, then the active tab', () => {
