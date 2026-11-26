@@ -68,7 +68,7 @@ Light and dark themes follow the operating system by default. Focus rings, label
 
 The panel follows the active tab, so switching tabs updates the tab bar without closing it. The agent works only on the **tab shown in the bar**, and only after you send a request. Nothing reads page content in the background, and switching the picker does not read the new tab until you run a task.
 
-For the active tab, the extension relies on `activeTab` (temporary access granted when you open the extension) plus `scripting` for on-demand injection. If you select a different tab, Chrome asks for access to that tab's exact site. Denying the request leaves the previous selection in place.
+Chrome's temporary `activeTab` grant cannot be queried and is lost when the page navigates or when you switch tabs, so the extension checks the real site permission for the tab in the bar. When that permission is missing, clicking the badge or sending a request asks Chrome to allow that one site. A denied request leaves the previous selection and your text in place, and no task starts.
 
 ### The tab picker
 
@@ -85,7 +85,7 @@ For the active tab, the extension relies on `activeTab` (temporary access grante
 | --- | --- | --- |
 | `storage` | Install | Providers, settings and chat history |
 | `scripting` | Install | Inject the page agent on demand |
-| `activeTab` | When you open the extension | Temporary access to the tab you are on |
+| `activeTab` | When you open the extension | Lets the extension identify the tab you are on |
 | `tabs` (optional) | When you ask to show tab names | Titles/URLs of non-active tabs for the picker |
 | Host access (optional) | When you select a tab, run a task, test a provider, or fetch models | Read/act on that exact site, or call that exact AI endpoint |
 
@@ -265,7 +265,8 @@ Automated tests cannot load an extension into Chrome, inject scripts into real p
 
 ### 3. Grant webpage access
 
-- [ ] With a normal page active, the tab bar shows `Page access`.
+- [ ] With a normal page active, the tab bar shows `Allow access` until you grant the site.
+- [ ] Send a request or click the badge; Chrome asks for that site. **Allow** → the task starts and the badge becomes `Page access`.
 - [ ] Select another tab in the picker; Chrome asks for that site. **Allow** → the tab bar updates and the badge becomes `Page access`.
 - [ ] Select another tab and **Deny**. The previous selection remains, the panel explains that access is needed, and no task starts.
 - [ ] Revoke the site in Settings → Behaviour → Website and endpoint access. The badge returns to `Allow access` and Chrome asks again next time.

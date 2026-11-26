@@ -172,16 +172,15 @@ if (JSDOM) {
     const tabsForPicker = () =>
       tabs.map((tab) => ({
         ...clone(tab),
-        permission:
-          tab.restricted
-            ? 'unavailable'
-            : tab.active
+        // Mirrors the worker: activeTab is temporary and cannot be queried, so
+        // the active tab reports the real host grant as well.
+        permission: tab.restricted
+          ? 'unavailable'
+          : tab.url
+            ? grantedOrigins.has(`${new URL(tab.url).protocol}//${new URL(tab.url).hostname}/*`)
               ? 'granted'
-              : tab.url
-                ? grantedOrigins.has(`${new URL(tab.url).protocol}//${new URL(tab.url).hostname}/*`)
-                  ? 'granted'
-                  : 'needed'
-                : 'unknown',
+              : 'needed'
+            : 'unknown',
       }));
 
     const handlers = {
@@ -351,10 +350,11 @@ if (JSDOM) {
     assert.equal($('#messages').children.length, 0);
     assert.equal($('#tabTitle').textContent, 'Shop — demo');
     assert.equal($('#tabHost').textContent, 'shop.example.com');
-    assert.equal($('#tabPermBtn').dataset.state, 'granted');
+    assert.equal($('#tabPermBtn').dataset.state, 'needed');
+    assert.equal($('#tabPermBtn').textContent, 'Allow access');
     assert.equal($('#tabCount').textContent, '4');
     assert.equal($('#runBtn').disabled, true);
-    assert.equal($('#goalHint').textContent, '');
+    assert.match($('#goalHint').textContent, /needs website access/i);
 
     // 2. empty-state suggestions fill the composer without sending
     const suggestion = $('#suggestions .suggestion');
@@ -370,6 +370,11 @@ if (JSDOM) {
     assert.equal(started.length, 1);
     assert.equal(started[0].tabId, 7);
     assert.equal(started[0].goal, 'Summarize this page.');
+    assert.ok(
+      requested.some((entry) => entry.origins.includes('https://shop.example.com/*')),
+      'the active tab asked Chrome for site access before the task ran',
+    );
+    assert.equal($('#tabPermBtn').dataset.state, 'granted');
     assert.equal($('#emptyState').hidden, true);
     assert.equal($('#messages').children.length, 2);
     assert.match($('#messages').textContent, /Summarize this page\./);
