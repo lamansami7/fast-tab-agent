@@ -345,7 +345,7 @@ export async function chatCompletion(provider, messages, options = {}) {
           `No response from the provider after ${Math.round(timeoutMs / 1000)}s.`,
         );
       }
-      // Mixed content, DNS failure, refused connection: all "connection failed".
+      // Mixed content, DNS failure, refused connection: all \"connection failed\".
       const detail = redact(error?.message || 'Network request failed.', provider.apiKey);
       throw new ProviderError(
         ERROR_CODES.connection_failed,
@@ -673,18 +673,72 @@ export async function testConnection(provider, options = {}) {
 
 /**
  * Optional model discovery (GET /models). Never required by the extension.
+ *
+ * Providers describe their catalogue differently, and many expose a friendly
+ * label next to the id. Keep the label when there is one: scanning
+ * `meta/llama-3.3-70b-instruct` is much slower than reading \"Llama 3.3 70B\".
  */
+const MODEL_LIST_LIMIT = 1000;
+
+function modelEntryFrom(value) {
+  if (typeof value === 'string') {
+    const id = value.trim();
+    return id ? { id } : null;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const id = [value.id, value.model, value.model_id, value.slug, value.name]
+    .find((candidate) => typeof candidate === 'string' && candidate.trim());
+  if (typeof id !== 'string') return null;
+  const cleanId = id.trim();
+  if (!cleanId) return null;
+  const name = [value.display_name, value.name, value.label, value.title]
+    .find(
+      (candidate) =>
+        typeof candidate === 'string' && candidate.trim() && candidate.trim() !== cleanId,
+    );
+  return { id: cleanId, name: name ? name.trim().slice(0, 120) : '' };
+}
+
+function modelEntriesFrom(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of ['data', 'models', 'model_ids', 'modelIdList']) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') {
+      // { data: { models: [...] } } and similar nested catalogues.
+      for (const nested of ['models', 'data', 'model_ids']) {
+        if (Array.isArray(value[nested])) return value[nested];
+      }
+    }
+  }
+  return [];
+}
+
 export async function listModels(provider, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
     throw new ProviderError(ERROR_CODES.connection_failed, 'Network access is unavailable.');
   }
-  const requestCheck = validateProviderForRequest(provider, {
+  // Discovery must work before a model id (or a display name) is chosen: the
+  // whole point is to help the user choose one. Only the endpoint and the
+  // credential are required here.
+  const urlCheck = validateBaseUrl(provider.baseUrl, {
     allowPrivateHttp: options.allowPrivateHttp === true,
   });
-  if (!requestCheck.valid) {
-    const [field, message] = Object.entries(requestCheck.errors)[0] || ['config', 'Invalid configuration.'];
-    throw new ProviderError(ERROR_CODES.invalid_config, message, { hint: message, field });
+  if (!urlCheck.ok) {
+    throw new ProviderError(ERROR_CODES.invalid_config, urlCheck.message, {
+      hint: urlCheck.message,
+      field: 'baseUrl',
+    });
+  }
+  const key = typeof provider.apiKey === 'string' ? provider.apiKey.trim() : '';
+  if (!key && !urlCheck.isLocal) {
+    throw new ProviderError(
+      ERROR_CODES.invalid_config,
+      'Add your API key to list this provider’s models.',
+      { hint: 'The models endpoint usually needs the same key as chat requests.', field: 'apiKey' },
+    );
   }
   let endpoint;
   try {
@@ -742,16 +796,22 @@ export async function listModels(provider, options = {}) {
   if (!payload || typeof payload !== 'object') {
     throw new ProviderError(ERROR_CODES.invalid_response, 'The models endpoint did not return JSON.');
   }
-  const entries = Array.isArray(payload?.data)
-    ? payload.data
-    : Array.isArray(payload?.models)
-      ? payload.models
-      : Array.isArray(payload)
-        ? payload
-        : [];
-  const models = entries
-    .map((entry) => (typeof entry === 'string' ? entry : entry?.id || entry?.name || entry?.model))
-    .filter((id) => typeof id === 'string' && id.trim())
-    .map((id) => id.trim());
-  return { models: Array.from(new Set(models)).sort(), endpoint };
+  const names = {};
+  const seen = new Set();
+  for (const entry of modelEntriesFrom(payload)) {
+    const model = modelEntryFrom(entry);
+    if (!model) continue;
+    seen.add(model.id);
+    // A later duplicate may carry the label the first entry omitted.
+    if (model.name && !names[model.id]) names[model.id] = model.name;
+  }
+  const all = Array.from(seen).sort();
+  const truncated = all.length > MODEL_LIST_LIMIT;
+  return {
+    models: truncated ? all.slice(0, MODEL_LIST_LIMIT) : all,
+    names,
+    total: all.length,
+    truncated,
+    endpoint,
+  };
 }
