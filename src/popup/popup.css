@@ -1949,3 +1949,41 @@ code {
     scroll-behavior: auto !important;
   }
 }
+
+
+/* -------------------------------------------------------------------------
+   Polished interaction layer: stronger hierarchy, accessible states and polish.
+   Kept in the existing stylesheet to preserve the extension's file structure.
+   ------------------------------------------------------------------------- */
+:root { --radius: 14px; --radius-sm: 10px; }
+.app { background: radial-gradient(ellipse at 12% -12%, var(--accent-soft), transparent 44%), var(--bg); }
+.topbar { backdrop-filter: blur(14px); }
+.logo { border-radius: 9px; box-shadow: 0 5px 18px rgba(97,82,232,.24); }
+button, .tab-row, .chip, .suggestion { -webkit-tap-highlight-color: transparent; }
+button:not(:disabled) { transition: transform .12s ease, background-color .16s ease, border-color .16s ease, box-shadow .16s ease, color .16s ease; }
+button:not(:disabled):active { transform: scale(.975); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.icon-btn:hover, .btn:hover, .chip:hover, .suggestion:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+.tabbar { border-radius: 12px; margin: 8px 9px 0; border: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 92%, transparent); }
+.tab-title { font-weight: 650; }
+.tab-host { letter-spacing: .015em; }
+.chat { scroll-behavior: smooth; }
+.empty { animation: msgIn .22s ease both; }
+.empty h1 { letter-spacing: -.025em; }
+.suggestions { gap: 8px; }
+.suggestion { border-radius: 11px; line-height: 1.4; }
+.suggestion:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.composer { background: linear-gradient(180deg, transparent, var(--bg) 24%); }
+.composer-box { box-shadow: 0 6px 24px rgba(0,0,0,.10); }
+#goalInput { line-height: 1.55; }
+.send-btn { box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 22%, transparent); }
+.messages .message { animation: msgIn .18s ease both; }
+.overlay { backdrop-filter: blur(8px); }
+.overlay-head { background: color-mix(in srgb, var(--surface) 92%, transparent); }
+.settings-tab[aria-selected="true"] { box-shadow: inset 0 -2px 0 var(--accent); }
+.provider-list, .access-list, .tab-list { scrollbar-width: thin; }
+.field input, .field textarea, .search input, select { transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease; }
+.field input:focus, .field textarea:focus, select:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+.toast { backdrop-filter: blur(12px); }
+@media (max-width: 380px) { .tabbar { margin-left: 6px; margin-right: 6px; } .topbar { padding-inline: 9px; } }
+@media (prefers-reduced-motion: reduce) { button:not(:disabled):active, .suggestion:hover { transform: none; } }
