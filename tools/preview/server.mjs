@@ -58,14 +58,14 @@ const LANDING = `<!doctype html>
   h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
   .head p { margin: 4px 0 0; color: #8b93a7; font-size: 12.5px; }
   .frame {
-    width: 420px; height: 600px; border-radius: 16px; overflow: hidden;
+    width: min(480px, 95vw); height: min(690px, 88vh); border-radius: 16px; overflow: hidden;
     border: 1px solid rgba(255,255,255,.10);
     box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(0,0,0,.4);
     background: #0a0b10; position: relative;
   }
-  iframe { width: 420px; height: 600px; border: 0; display: block; }
+  iframe { width: min(480px, 95vw); height: min(690px, 88vh); border: 0; display: block; }
   .notes {
-    max-width: 420px; font-size: 11.5px; color: #6f7891; text-align: center;
+    max-width: 480px; font-size: 11.5px; color: #6f7891; text-align: center;
   }
   .notes code { color: #a8b0c4; background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 5px; font-size: 11px; }
   .actions { display: flex; gap: 8px; }

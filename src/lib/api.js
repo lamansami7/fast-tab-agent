@@ -303,6 +303,11 @@ export async function chatCompletion(provider, messages, options = {}) {
     ? messages.map((message) => redactPromptValue(message, provider.apiKey))
     : messages;
   const body = buildRequestBody(provider, safeMessages, options);
+  // Reuse compatibility discoveries within a run, never across providers or
+  // configuration changes. Only optional request fields can be omitted.
+  for (const param of options.omitOptionalParams || []) {
+    if (RETRYABLE_STRIP_PARAMS.has(param)) delete body[param];
+  }
   const timeoutMs = options.timeoutMs || LIMITS.requestTimeoutMs;
   const dropped = [];
   let lastError = null;
@@ -385,7 +390,7 @@ export async function chatCompletion(provider, messages, options = {}) {
           ? detectParamFromBody(classified.providerMessage)
           : null);
       if (
-        param &&
+        RETRYABLE_STRIP_PARAMS.has(param) &&
         Object.prototype.hasOwnProperty.call(body, param) &&
         !dropped.includes(param) &&
         attempt < MAX_ATTEMPTS

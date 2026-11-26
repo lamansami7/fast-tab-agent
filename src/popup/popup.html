@@ -63,6 +63,7 @@
         <section class="tabbar" aria-label="Selected tab">
           <span class="tab-favicon" id="tabFavicon" aria-hidden="true">F</span>
           <div class="tab-text">
+            <span class="context-kicker">TARGET TAB</span>
             <span class="tab-title" id="tabTitle">Loading tab…</span>
             <span class="tab-meta">
               <span class="tab-host" id="tabHost">—</span>
@@ -82,6 +83,12 @@
           </button>
         </section>
 
+        <section class="run-board" id="runBoard" aria-label="Task progress" hidden>
+          <div class="run-heading"><strong id="runStage" role="status"></strong><span id="runBudget"></span></div>
+          <progress id="runMeter" aria-label="Action budget"></progress>
+          <details id="runPlanBox" hidden><summary>Current plan</summary><ol id="runPlan"></ol></details>
+        </section>
+
         <section class="chat" id="chatLog" aria-label="Conversation">
           <div class="empty" id="emptyState">
             <div class="empty-icon" aria-hidden="true">
@@ -89,20 +96,26 @@
                 <path d="M13.4 2.5 5 13.2h5.1l-1.5 8.3 8.6-11H12l1.4-8Z" fill="currentColor" />
               </svg>
             </div>
-            <h1>What should I do on this page?</h1>
-            <p>Ask about the page, find something, or let the agent take a few steps for you.</p>
+            <span class="context-kicker">YOUR BROWSER WORKSPACE</span>
+            <h1>Put this tab to work.</h1>
+            <p>Read and analyze this page, or give the agent a task to carry out.</p>
             <div class="suggestions" id="suggestions">
               <button type="button" class="suggestion" data-prompt="Summarize this page.">Summarize this page</button>
               <button type="button" class="suggestion" data-prompt="Find the main links on this page.">Find the main links</button>
               <button type="button" class="suggestion" data-prompt="Find the contact form and tell me what information it asks for.">Inspect the contact form</button>
               <button type="button" class="suggestion" data-prompt="Search this page for information about refunds.">Search for refunds</button>
             </div>
-            <p class="empty-note">Page content is read only when you send a request. Nothing runs in the background.</p>
+            <p class="empty-note">Requests send relevant page content to your configured AI provider. Tasks stay on the selected tab.</p>
           </div>
           <div class="messages" id="messages" role="log" aria-live="off"></div>
         </section>
 
         <footer class="composer">
+          <div class="composer-tools">
+            <label for="taskMode">Run mode</label>
+            <select id="taskMode"><option value="act">Browser actions</option><option value="read">Read only</option></select>
+            <span id="modeNote">Can interact with this tab</span>
+          </div>
           <div class="composer-box" id="composerBox">
             <label class="sr-only" for="goalInput">Message Fast Tab Agent</label>
             <textarea

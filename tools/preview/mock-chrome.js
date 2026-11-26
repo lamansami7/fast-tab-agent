@@ -6,6 +6,7 @@
  * interface can be reviewed without loading the unpacked extension.
  */
 (function () {
+  document.documentElement.classList.add('fta-preview');
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clone = (value) => JSON.parse(JSON.stringify(value));
 
@@ -191,12 +192,14 @@
     }));
   }
 
-  function startTask(goal, tabId) {
+  function startTask(goal, tabId, mode) {
     clearTimers();
     const target = tabs.find((tab) => tab.id === tabId) || tabs[0];
     task = {
       id: `task_${Date.now().toString(36)}`,
       goal,
+      mode,
+      plan: mode === 'read' ? ['Read the selected page', 'Summarize the key points'] : ['Find matching products', 'Compare available options'],
       status: 'running',
       phase: 'starting',
       steps: [],
@@ -220,7 +223,13 @@
     };
     emitProgress();
 
-    const script = [
+    const script = mode === 'read' ? [
+      { at: 300, phase: 'reading' },
+      { at: 900, phase: 'thinking', currentStep: 1 },
+      { at: 1800, phase: 'finishing' },
+      { at: 2300, finish: { answer: 'This demo page lists running shoes and highlights current prices, sizes, and delivery options.',
+        step: { step: 1, description: 'finish', ok: true, done: true } } },
+    ] : [
       { at: 300, phase: 'reading' },
       { at: 900, phase: 'thinking', currentStep: 1 },
       { at: 1400, phase: 'acting', action: { type: 'type' } },
@@ -394,7 +403,7 @@
       canRequestTabs: true,
     }),
 
-    'task:start': ({ goal, tabId }) => startTask(goal, tabId),
+    'task:start': ({ goal, tabId, mode }) => startTask(goal, tabId, mode),
     'task:stop': () => {
       clearTimers();
       if (task && task.status === 'running') {

@@ -666,3 +666,17 @@ test('empty-response diagnostics are redacted and do not leak content', async ()
     },
   );
 });
+
+test('can carry forward optional parameter incompatibilities without dropping required fields', async () => {
+  const fetchImpl = createFetchMock(() => jsonResponse({
+    body: { choices: [{ message: { content: 'ok' } }] },
+  }));
+  await chatCompletion(makeProvider(), messages, {
+    fetchImpl, jsonMode: true, omitOptionalParams: new Set(['response_format', 'model', 'messages']),
+  });
+  assert.equal(fetchImpl.calls.length, 1);
+  const body = fetchImpl.calls[0].body;
+  assert.equal('response_format' in body, false);
+  assert.equal(body.model, 'test-model');
+  assert.deepEqual(body.messages, messages);
+});

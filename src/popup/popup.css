@@ -1,6 +1,6 @@
 /* ==========================================================================
    Fast Tab Agent — popup
-   A compact, chat-first surface (420 × 600) with light and dark themes.
+   A compact workspace with light and dark themes.
    ========================================================================== */
 
 *,
@@ -11,27 +11,27 @@
 
 :root {
   color-scheme: dark;
-  --bg: #0b0c0f;
-  --bg-soft: #0e1015;
-  --surface: #121419;
-  --surface-2: #171a21;
-  --surface-3: #1d212a;
+  --bg: #0c1119;
+  --bg-soft: #0e1621;
+  --surface: #141e2c;
+  --surface-2: #192637;
+  --surface-3: #23334a;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.15);
   --text: #e9ebf0;
   --text-2: #a7aebd;
   --text-3: #757e90;
-  --accent: #7c6cf5;
-  --accent-strong: #6a58f0;
-  --accent-soft: rgba(124, 108, 245, 0.14);
-  --accent-text: #cfc8ff;
+  --accent: #5bc9ee;
+  --accent-strong: #287aaa;
+  --accent-soft: rgba(79, 181, 225, 0.14);
+  --accent-text: #aee8ff;
   --success: #35c98a;
   --success-soft: rgba(53, 201, 138, 0.12);
   --danger: #f26d6d;
   --danger-soft: rgba(242, 109, 109, 0.12);
   --warn: #f0b45c;
   --warn-soft: rgba(240, 180, 92, 0.12);
-  --bubble: #6f5ef0;
+  --bubble: #206488;
   --bubble-text: #ffffff;
   --shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
   --radius: 12px;
@@ -52,17 +52,17 @@
   --text: #111621;
   --text-2: #4d5668;
   --text-3: #788193;
-  --accent: #6152e8;
-  --accent-strong: #5040d8;
-  --accent-soft: rgba(97, 82, 232, 0.1);
-  --accent-text: #4b3ccf;
+  --accent: #0f6891;
+  --accent-strong: #075674;
+  --accent-soft: rgba(28, 113, 162, 0.1);
+  --accent-text: #125572;
   --success: #0e9b62;
   --success-soft: rgba(14, 155, 98, 0.1);
   --danger: #d54545;
   --danger-soft: rgba(213, 69, 69, 0.09);
   --warn: #a56a12;
   --warn-soft: rgba(165, 106, 18, 0.1);
-  --bubble: #6152e8;
+  --bubble: #0f6891;
   --bubble-text: #ffffff;
   --shadow: 0 12px 32px rgba(16, 24, 40, 0.12);
 }
@@ -80,17 +80,17 @@
     --text: #111621;
     --text-2: #4d5668;
     --text-3: #788193;
-    --accent: #6152e8;
-    --accent-strong: #5040d8;
-    --accent-soft: rgba(97, 82, 232, 0.1);
-    --accent-text: #4b3ccf;
+    --accent: #0f6891;
+    --accent-strong: #075674;
+    --accent-soft: rgba(28, 113, 162, 0.1);
+    --accent-text: #125572;
     --success: #0e9b62;
     --success-soft: rgba(14, 155, 98, 0.1);
     --danger: #d54545;
     --danger-soft: rgba(213, 69, 69, 0.09);
     --warn: #a56a12;
     --warn-soft: rgba(165, 106, 18, 0.1);
-    --bubble: #6152e8;
+    --bubble: #0f6891;
     --bubble-text: #ffffff;
     --shadow: 0 12px 32px rgba(16, 24, 40, 0.12);
   }
@@ -98,8 +98,8 @@
 
 html,
 body {
-  width: 420px;
-  height: 600px;
+  width: 480px;
+  height: 690px;
   margin: 0;
   overflow: hidden;
 }
@@ -217,7 +217,7 @@ code {
   border-radius: 8px;
   color: #fff;
   background: linear-gradient(145deg, #8171ff, #5a7cff);
-  box-shadow: 0 4px 12px rgba(97, 82, 232, 0.32);
+  box-shadow: 0 4px 12px rgba(28, 113, 162, 0.32);
 }
 
 .brand-text {
@@ -1987,3 +1987,35 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .toast { backdrop-filter: blur(12px); }
 @media (max-width: 380px) { .tabbar { margin-left: 6px; margin-right: 6px; } .topbar { padding-inline: 9px; } }
 @media (prefers-reduced-motion: reduce) { button:not(:disabled):active, .suggestion:hover { transform: none; } }
+
+/* Workspace: keep controls and run status anchored while the transcript scrolls. */
+.fta-preview, .fta-preview body { width: 100vw; height: 100vh; }
+.topbar { padding-block: 14px; border-bottom: 1px solid var(--border); }
+.tabbar { margin: 10px 12px 5px; padding: 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.context-kicker { display: block; color: var(--accent-text); font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+.tab-text { min-width: 0; }
+.chat { background: radial-gradient(ellipse at 50% 0%, var(--accent-soft), transparent 67%); }
+.empty { max-width: 420px; margin-inline: auto; }
+.empty h1 { font-size: clamp(23px, 6vw, 32px); letter-spacing: -.05em; line-height: 1.12; }
+.empty-icon { width: 52px; height: 52px; border-radius: 16px; box-shadow: 0 0 28px var(--accent-soft); }
+.suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
+.suggestion { min-height: 43px; border-radius: 10px; text-align: left; background: var(--surface); white-space: normal; }
+.composer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 7px; font-size: 11px; color: var(--text-2); }
+.composer-tools select { color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 5px 8px; font: inherit; }
+#modeNote { margin-inline-start: auto; }
+.run-board { flex: none; margin: 4px 12px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); font-size: 11px; }
+.run-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+#runStage { overflow-wrap: anywhere; }
+#runBudget { white-space: nowrap; color: var(--text-2); }
+#runMeter { display: block; width: 100%; height: 7px; margin-block: 6px; accent-color: var(--accent); }
+#runPlanBox summary { color: var(--accent-text); cursor: pointer; }
+#runPlan { max-height: 85px; overflow: auto; padding-inline-start: 22px; margin-block: 5px; overflow-wrap: anywhere; }
+.message-tool { align-self: flex-end; display: block; margin-top: 4px; padding: 4px 7px; font: inherit; font-size: 10px; color: var(--text-2); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
+.message-tool:hover { color: var(--text); border-color: var(--border-strong); }
+@media (max-width: 340px) { .suggestions { grid-template-columns: 1fr; } .tabbar { margin-inline: 6px; } }
+
+.topbar .logo { border-radius: 11px; }
+.composer-box:focus-within { box-shadow: 0 0 0 3px var(--accent-soft); }
+.overlay-head { background: linear-gradient(105deg, var(--accent-soft), transparent 80%), var(--surface); }
+.msg-user { gap: 4px; }
+.message-tool:focus-visible, .composer-tools select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

@@ -343,8 +343,8 @@ const PHASE_ACTIVITY = {
 function activityForTask(task) {
   if (!task) return '';
   if (task.phase === 'stopping') return 'Stopping…';
-  if (task.phase === 'acting' && task.currentAction?.type) {
-    return ACTION_ACTIVITY[task.currentAction.type] || 'Working on the page…';
+  if (task.phase === 'acting' && (task.currentAction?.type || task.currentActionLabel)) {
+    return ACTION_ACTIVITY[task.currentAction?.type] || task.currentActionLabel;
   }
   return PHASE_ACTIVITY[task.phase] || 'Working…';
 }
@@ -408,6 +408,23 @@ function renderStatus() {
   if (hint.tone) hintNode.dataset.tone = hint.tone;
   else delete hintNode.dataset.tone;
 
+  const task = state.task;
+  const running = task?.status === 'running';
+  $('#runBoard').hidden = !running;
+  if (running) {
+    const stage = activityForTask(task);
+    if ($('#runStage').textContent !== stage) $('#runStage').textContent = stage;
+    $('#runBudget').textContent = `${task.steps?.filter((step) => !step.done).length || 0} / ${task.maxSteps || 1} steps used`;
+    $('#runMeter').max = task.maxSteps || 1;
+    $('#runMeter').value = task.steps?.length || 0;
+    const plan = task.plan || [];
+    $('#runPlanBox').hidden = !plan.length;
+    const key = JSON.stringify(plan);
+    if ($('#runPlan').dataset.key !== key) {
+      $('#runPlan').dataset.key = key;
+      $('#runPlan').replaceChildren(...plan.map((text) => el('li', { text })));
+    }
+  }
   renderComposer();
 }
 
@@ -415,6 +432,7 @@ function renderComposer() {
   const running = state.task?.status === 'running';
   const runBtn = $('#runBtn');
   const stopBtn = $('#stopBtn');
+  $('#taskMode').disabled = running || state.busyStarting;
   runBtn.hidden = running;
   stopBtn.hidden = !running;
   runBtn.disabled = state.busyStarting || !$('#goalInput').value.trim();
@@ -575,11 +593,16 @@ function renderSteps(message) {
 
 function renderMessage(message) {
   if (message.role === 'user') {
-    return el(
-      'article',
-      { class: 'msg msg-user' },
-      el('div', { class: 'msg-bubble', text: message.text }),
-    );
+    const reuse = el('button', { class: 'message-tool', type: 'button', text: 'Reuse request' });
+    reuse.addEventListener('click', () => {
+      const input = $('#goalInput');
+      if (input.value && !window.confirm('Replace the current draft?')) return;
+      input.value = message.text;
+      autosizeInput();
+      renderComposer();
+      input.focus();
+    });
+    return el('article', { class: 'msg msg-user' }, el('div', { class: 'msg-bubble', text: message.text }), reuse);
   }
 
   const status = message.status || 'done';
@@ -633,17 +656,49 @@ function renderMessage(message) {
 
   if (message.tabTitle) body.append(el('div', { class: 'msg-tab', text: `Tab: ${message.tabTitle}` }));
 
+  if (message.text && status !== 'running') {
+    const copy = el('button', { class: 'message-tool', type: 'button', text: 'Copy answer' });
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(message.text);
+        toast('Answer copied.', 'success');
+      } catch {
+        toast('Could not copy automatically. Select the answer to copy it.', 'error');
+      }
+    });
+    body.append(copy);
+  }
   article.append(avatar, body);
   return article;
 }
+
+const messageNodes = new Map();
 
 function renderMessages() {
   const log = $('#chatLog');
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 90;
   const messages = $('#messages');
-  messages.replaceChildren();
-
-  for (const message of state.chat) messages.append(renderMessage(message));
+  const liveIds = new Set(state.chat.map((message) => message.id));
+  for (const [id, entry] of messageNodes) {
+    if (!liveIds.has(id)) {
+      entry.node.remove();
+      messageNodes.delete(id);
+    }
+  }
+  let cursor = messages.firstChild;
+  for (const message of state.chat) {
+    const key = JSON.stringify(message);
+    let entry = messageNodes.get(message.id);
+    if (entry?.key !== key) {
+      const node = renderMessage(message);
+      if (entry?.node === cursor) cursor = cursor.nextSibling;
+      entry?.node.remove();
+      entry = { key, node };
+      messageNodes.set(message.id, entry);
+    }
+    if (entry.node !== cursor) messages.insertBefore(entry.node, cursor);
+    cursor = entry.node.nextSibling;
+  }
 
   $('#emptyState').hidden = state.chat.length > 0;
 
@@ -670,7 +725,7 @@ function applyTask(task, { createIfMissing = false } = {}) {
   if (!task || typeof task !== 'object') return;
 
   state.task = task;
-  if (task.tabId !== null && task.tabId !== undefined && state.tabs.some((tab) => tab.id === task.tabId)) {
+  if (task.status === 'running' && task.tabId != null && state.tabs.some((tab) => tab.id === task.tabId)) {
     state.selectedTabId = task.tabId;
   }
 
@@ -720,6 +775,7 @@ async function startTask() {
 
   const input = $('#goalInput');
   const goal = input.value.trim();
+  const mode = $('#taskMode').value;
   if (!goal) {
     input.focus();
     return;
@@ -784,7 +840,7 @@ async function startTask() {
   });
 
   try {
-    const task = await send('task:start', { goal, tabId: fresh.id });
+    const task = await send('task:start', { goal, tabId: fresh.id, mode });
     applyTask(task);
   } catch (error) {
     assistantMessage.status = 'error';
@@ -1013,7 +1069,7 @@ async function refreshTabInfo({ quiet = false } = {}) {
   if (info) {
     state.settings = { ...DEFAULT_SETTINGS, ...(info.settings || {}) };
     state.appVersion = info.version || '';
-    if (info.task) state.task = info.task;
+    if (info.task && !state.task) state.task = info.task;
     applyTheme();
   }
 
@@ -1866,6 +1922,22 @@ async function closeEditor() {
 }
 
 function bindEvents() {
+  let tabRefreshTimer;
+  const scheduleTabRefresh = () => {
+    clearTimeout(tabRefreshTimer);
+    tabRefreshTimer = setTimeout(() => void refreshTabInfo({ quiet: true }), 180);
+  };
+  chrome.tabs?.onUpdated?.addListener((tabId, change) => {
+    if (tabId === state.selectedTabId || state.view === 'tabs') {
+      if (change.status === 'complete' || change.url || change.title) scheduleTabRefresh();
+    }
+  });
+  chrome.tabs?.onRemoved?.addListener(scheduleTabRefresh);
+  chrome.tabs?.onActivated?.addListener(scheduleTabRefresh);
+  $('#taskMode').addEventListener('change', () => {
+    $('#modeNote').textContent = $('#taskMode').value === 'read'
+      ? 'No clicks, typing, or navigation' : 'Can interact with this tab';
+  });
   $('#providerChip').addEventListener('click', () => openSettings('ai'));
   $('#settingsBtn').addEventListener('click', () => openSettings('ai'));
   $('#settingsBack').addEventListener('click', () => showView('main'));

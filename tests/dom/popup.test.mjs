@@ -229,7 +229,7 @@ if (JSDOM) {
         canRequestTabs: true,
       }),
       'task:state': () => (currentTask ? clone(currentTask) : null),
-      'task:start': ({ goal, tabId }) => {
+      'task:start': ({ goal, tabId, mode }) => {
         const target = tabs.find((item) => item.id === tabId) || tabs[0];
         currentTask = {
           id: `task_${++taskSeq}`,
@@ -251,7 +251,7 @@ if (JSDOM) {
           currentAction: null,
           currentActionLabel: '',
         };
-        started.push({ goal, tabId: target.id });
+        started.push({ goal, tabId: target.id, mode });
         return clone(currentTask);
       },
       'task:stop': () => {
@@ -347,11 +347,18 @@ if (JSDOM) {
     assert.equal(started.length, 0);
     fire($('#goalInput'));
 
+    $('#taskMode').value = 'read';
+    $('#taskMode').dispatchEvent(new window.Event('change'));
+    assert.match($('#modeNote').textContent, /No clicks/);
+
     // 3. send a request; the optimistic conversation appears immediately
     $('#runBtn').click();
     await delay(90);
     assert.equal(started.length, 1);
     assert.equal(started[0].tabId, 7);
+    assert.equal(started[0].mode, 'read');
+    assert.equal($('#runBoard').hidden, false);
+    assert.equal($('#taskMode').disabled, true);
     assert.equal(started[0].goal, 'Summarize this page.');
     assert.equal($('#emptyState').hidden, true);
     assert.equal($('#messages').children.length, 2);

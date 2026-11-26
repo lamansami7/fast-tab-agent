@@ -71,13 +71,17 @@ function findTab(tabId) {
   return tabs.find((item) => item.id === tabId) || null;
 }
 
+let loseActionResponse = false;
+let firstModelAction = { type: 'click', elementId: 1 };
+
 function contentAgent(message, target = tab) {
-  if (message.type === 'fta:ping') return { ok: true, url: target.url };
+  if (message.type === 'fta:ping') return { ok: true, url: target.url, context: { documentToken: `doc:${target.url}` } };
   if (message.type === 'fta:snapshot') {
     return {
       ok: true,
       snapshot: {
         url: target.url,
+        context: { documentToken: `doc:${target.url}`, url: target.url },
         title: target.title,
         elements: [{ id: 1, tag: 'button', label: 'Search', inViewport: true }],
         headings: [],
@@ -88,6 +92,8 @@ function contentAgent(message, target = tab) {
   }
   if (message.type === 'fta:execute') {
     executed.push({ tabId: target.id, action: message.action });
+    if (loseActionResponse) throw new Error('Document channel closed after dispatch');
+    if (message.action.type === 'navigate') target.url = message.action.url;
     return { ok: true, observation: `Did ${message.action.type} on ${target.title}.` };
   }
   if (message.type === 'fta:hud') return { ok: true };
@@ -154,7 +160,7 @@ globalThis.fetch = async (url, init) => {
       ? JSON.stringify({
           thought: 'Click search',
           plan: ['click', 'finish'],
-          action: { type: 'click', elementId: 1 },
+          action: firstModelAction,
         })
       : JSON.stringify({ thought: 'All done', done: true, answer: 'Searched the catalogue.' });
   return jsonResponse({
@@ -520,4 +526,42 @@ test('the HUD can stop only the task running in its own tab', async () => {
 test('ignores unknown message types', () => {
   const result = listener({ type: 'nope:whatever' }, {}, () => {});
   assert.equal(result, false);
+});
+
+
+test('does not replay a mutation when Chrome loses the action acknowledgement', async () => {
+  modelCalls = 0;
+  executed.length = 0;
+  loseActionResponse = true;
+  try {
+    const started = await send('task:start', { goal: 'Open the catalogue' });
+    assert.equal(started.ok, true);
+    const state = await waitForTask();
+    assert.equal(state.status, 'error');
+    assert.match(state.error.message, /may already have happened/);
+    assert.equal(executed.length, 1);
+    assert.equal(modelCalls, 1);
+  } finally {
+    loseActionResponse = false;
+  }
+});
+
+
+test('navigation observes the new top-level document before the next model turn', async () => {
+  const original = tab.url;
+  const destination = 'https://shop.example.com/collection';
+  firstModelAction = { type: 'navigate', url: destination };
+  modelCalls = 0;
+  fetchCalls.length = 0;
+  try {
+    const started = await send('task:start', { goal: 'Read the collection' });
+    assert.equal(started.ok, true);
+    const state = await waitForTask();
+    assert.equal(state.status, 'done');
+    assert.equal(state.steps[0].ok, true);
+    assert.match(fetchCalls[1].body.messages[1].content, /URL: https:\/\/shop\.example\.com\/collection/);
+  } finally {
+    tab.url = original;
+    firstModelAction = { type: 'click', elementId: 1 };
+  }
 });

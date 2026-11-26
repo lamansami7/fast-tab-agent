@@ -211,3 +211,41 @@ test('observations are recorded for the next turn', async () => {
   const secondPrompt = callModel.calls[1].find((message) => message.role === 'user');
   assert.match(secondPrompt.content, /Clicked "Sign in"/);
 });
+
+test('read-only mode does not dispatch a model-proposed mutation', async () => {
+  let executed = 0;
+  const result = await runAgentTask(baseParams({
+    mode: 'read',
+    callModel: modelQueue([{ action: { type: 'click', elementId: 1 } }, { done: true, answer: 'Read the page.' }]),
+    executeAction: async () => { executed += 1; return { ok: true }; },
+  }));
+  assert.equal(executed, 0);
+  assert.match(result.steps[0].observation, /read-only mode/i);
+  assert.equal(result.status, 'done');
+});
+
+test('halts an alternating action cycle against an unchanged page', async () => {
+  let modelTurns = 0;
+  let dispatched = 0;
+  const result = await runAgentTask(baseParams({
+    maxSteps: 12,
+    callModel: async () => ({ content: JSON.stringify({ action: { type: 'click', elementId: (modelTurns++ % 2) + 1 } }) }),
+    executeAction: async () => { dispatched += 1; return { ok: true }; },
+  }));
+  assert.equal(result.stalled, true);
+  assert.equal(dispatched, 6);
+});
+
+test('denied or ambiguous actions are terminal and do not ask for another model turn', async () => {
+  let turns = 0;
+  const result = await runAgentTask(baseParams({
+    callModel: async () => {
+      turns += 1;
+      return { content: '{"action":{"type":"click","elementId":1}}' };
+    },
+    executeAction: async () => ({ ok: false, halt: true, observation: 'User declined.' }),
+  }));
+  assert.equal(turns, 1);
+  assert.equal(result.status, 'error');
+  assert.match(result.error.message, /declined/);
+});
