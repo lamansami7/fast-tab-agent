@@ -33,6 +33,7 @@ import { ERROR_CODES, ProviderError, friendlyError } from './lib/errors.js';
 import { runAgentTask } from './lib/agent-runner.js';
 import {
   chooseInitialTabId,
+  classifyInjectionError,
   classifyTabUrl,
   originPatternFor,
   tabHost,
@@ -259,19 +260,10 @@ async function ensureInjected(tabId) {
       files: ['src/content/agent.js'],
     });
   } catch (error) {
-    const detail = String(error?.message || '').toLowerCase();
-    if (detail.includes('chrome web store') || detail.includes('cannot be scripted')) {
-      throw new ProviderError(
-        ERROR_CODES.tab_restricted,
-        'Chrome blocks extensions on this page, so it cannot be read.',
-        { hint: 'Open a normal website, or use a different tab.' },
-      );
-    }
-    throw new ProviderError(
-      ERROR_CODES.tab_permission_required,
-      'Chrome did not allow the page agent to start on this tab.',
-      { hint: 'Grant website access for this tab, reload the page, and try again.' },
-    );
+    const raw = String(error?.message || '');
+    if (raw) console.warn('Fast Tab Agent: page agent injection failed:', raw);
+    const failure = classifyInjectionError(raw);
+    throw new ProviderError(failure.code, failure.message, { hint: failure.hint });
   }
   const ready = await pingTab(tabId);
   if (!ready) {
@@ -330,21 +322,21 @@ async function resolveTargetTab(requestedTabId) {
     );
   }
 
-  const active = await getActiveTab();
-  const isActive = active && active.id === tab.id;
-  if (!isActive) {
-    const origin = originPatternFor(url);
-    const granted =
-      origin && chrome.permissions?.contains
-        ? await chrome.permissions.contains({ origins: [origin] }).catch(() => false)
-        : false;
-    if (!granted) {
-      throw new ProviderError(
-        ERROR_CODES.tab_permission_required,
-        `Fast Tab Agent does not have access to ${tabHost(url) || 'that website'} yet.`,
-        { hint: 'Open the tab picker and grant access to this tab, then send the request again.' },
-      );
-    }
+  // Never assume the active tab is reachable. Chrome's temporary `activeTab`
+  // grant cannot be queried, is lost when the page navigates, and does not
+  // follow a tab switch — which is how “Page access” used to be reported for a
+  // tab that could not actually be injected. Check the real host permission.
+  const origin = originPatternFor(url);
+  const granted =
+    origin && chrome.permissions?.contains
+      ? await chrome.permissions.contains({ origins: [origin] }).catch(() => false)
+      : false;
+  if (!granted) {
+    throw new ProviderError(
+      ERROR_CODES.tab_permission_required,
+      `Fast Tab Agent needs your permission to work on ${tabHost(url) || 'that website'}.`,
+      { hint: 'Click the tab’s access badge (or choose it in the tab picker), allow access, then send the request again.' },
+    );
   }
   return tab;
 }
@@ -386,8 +378,11 @@ async function tabsList() {
     let permission = 'unknown';
     if (rawUrl) {
       if (!check.supported) permission = 'unavailable';
-      else if (tab.id === active?.id) permission = 'granted';
       else if (hasPermissionCheck) {
+        // `activeTab` cannot be queried and lasts only until the page
+        // navigates, so every tab — including the active one — reports the
+        // real host grant. Reporting a temporary grant as permanent access is
+        // what let the agent start on a tab it could not read.
         const origin = originPatternFor(rawUrl);
         if (origin) {
           if (!originCache.has(origin)) {
@@ -520,9 +515,8 @@ async function finishTask(outcome) {
   currentTask.error = outcome.error || null;
   currentTask.limitReached = Boolean(outcome.limitReached);
   currentTask.finishedAt = Date.now();
-      currentTask.phase = currentTask.status;
+  currentTask.phase = currentTask.status;
   currentTask.currentAction = null;
-  currentTask.currentActionLabel = '';
   currentTask.currentActionLabel = '';
   if (!currentTask.steps.length && Array.isArray(outcome.steps)) currentTask.steps = outcome.steps;
 
@@ -829,6 +823,11 @@ async function appInfo() {
   const settings = await getSettings();
   const rawUrl = tab?.url || tab?.pendingUrl || '';
   const check = classifyTabUrl(rawUrl);
+  const origin = check.supported ? originPatternFor(rawUrl) : null;
+  const granted =
+    origin && chrome.permissions?.contains
+      ? await chrome.permissions.contains({ origins: [origin] }).catch(() => false)
+      : false;
   return {
     version: chrome.runtime.getManifest().version,
     settings,
@@ -841,7 +840,7 @@ async function appInfo() {
           supported: check.supported,
           restricted: !check.supported,
           reason: check.reason,
-          permission: check.supported ? 'granted' : 'unavailable',
+          permission: check.supported ? (granted ? 'granted' : 'needed') : 'unavailable',
           active: true,
         }
       : null,
