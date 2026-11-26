@@ -20,6 +20,7 @@ const broadcasts = [];
 const executed = [];
 const fetchCalls = [];
 const sentTabMessages = [];
+const tabUpdates = [];
 const permissionChecks = [];
 const siteGrants = new Set();
 
@@ -129,6 +130,10 @@ globalThis.chrome = {
       const found = findTab(tabId);
       if (!found) throw new Error(`No tab with id ${tabId}`);
       return found;
+    },
+    update: async (tabId, props) => {
+      tabUpdates.push({ tabId, props });
+      return findTab(tabId);
     },
     sendMessage: async (tabId, message) => {
       sentTabMessages.push({ tabId, type: message.type });
@@ -271,10 +276,33 @@ test('tests unsaved drafts, falling back to the stored key', async () => {
   assert.equal(fetchCalls.at(-1).body.model, 'draft-model');
 });
 
+test('the active tab still needs real site access before it can run', async () => {
+  modelCalls = 0;
+  fetchCalls.length = 0;
+  const before = sentTabMessages.filter((message) => message.tabId === 7).length;
+
+  const response = await send('task:start', { goal: 'Search for shoes' });
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, 'tab_permission_required');
+  assert.match(response.error.message, /shop\.example\.com/);
+  assert.equal(fetchCalls.length, 0, 'no provider request before tab access exists');
+  assert.equal(
+    sentTabMessages.filter((message) => message.tabId === 7).length,
+    before,
+    'the page agent was never injected into the unpermitted active tab',
+  );
+
+  // Granting the site is enough: the same tab is now reported and usable.
+  siteGrants.add('https://shop.example.com/*');
+  const listed = await send('tabs:list');
+  assert.equal(listed.data.tabs.find((item) => item.id === 7).permission, 'granted');
+});
+
 test('runs a full task through the page agent and records progress', async () => {
   executed.length = 0;
   modelCalls = 0;
   fetchCalls.length = 0;
+  siteGrants.add('https://shop.example.com/*');
 
   const response = await send('task:start', { goal: 'Search for shoes' });
   assert.equal(response.ok, true);
@@ -382,6 +410,7 @@ test('app:info reports the current tab, restrictions and settings', async () => 
   assert.equal(response.data.tab.supported, true);
   assert.equal(response.data.tab.restricted, false);
   assert.equal(response.data.tab.host, 'shop.example.com');
+  assert.equal(response.data.tab.permission, 'granted', 'a real site grant is reported');
   assert.equal(response.data.version, '1.0.0');
   assert.equal(JSON.stringify(response.data).includes('sk-custom-secret-9876'), false);
 });
@@ -397,7 +426,7 @@ test('tabs:list returns bounded metadata and per-tab access state', async () => 
 
   const shop = data.tabs.find((item) => item.id === 7);
   assert.equal(shop.active, true);
-  assert.equal(shop.permission, 'granted');
+  assert.equal(shop.permission, 'granted', 'the real site grant from the earlier test is reported');
   assert.equal(shop.restricted, false);
   assert.equal(shop.favIconUrl, 'https://shop.example.com/favicon.ico');
 
@@ -457,6 +486,10 @@ test('a granted tab can be targeted explicitly', async () => {
   assert.ok(
     sentTabMessages.some((message) => message.tabId === 8 && message.type === 'fta:snapshot'),
     'the snapshot came from the selected tab',
+  );
+  assert.ok(
+    tabUpdates.some((update) => update.tabId === 8 && update.props.active === true),
+    'the selected tab is brought to the foreground before it is controlled',
   );
 });
 
