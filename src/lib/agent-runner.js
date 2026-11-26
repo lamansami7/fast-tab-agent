@@ -56,6 +56,8 @@ export async function runAgentTask(params) {
 
   const steps = [];
   const history = [];
+  // Keep the budget predictable even if callers supply a malformed value.
+  const stepBudget = Math.max(1, Math.min(20, Math.floor(Number(maxSteps) || 1)));
   let consecutiveFailures = 0;
   let answer = '';
   let plan = [];
@@ -72,9 +74,9 @@ export async function runAgentTask(params) {
     safeEmit(onEvent, { phase: 'step', step: entry });
   };
 
-  safeEmit(onEvent, { phase: 'start', goal, maxSteps });
+  safeEmit(onEvent, { phase: 'start', goal, maxSteps: stepBudget });
 
-  for (let step = 1; step <= maxSteps; step += 1) {
+  for (let step = 1; step <= stepBudget; step += 1) {
     if (isCancelled()) return { status: 'stopped', steps, answer, plan };
 
     safeEmit(onEvent, { phase: 'reading', step });
@@ -98,7 +100,7 @@ export async function runAgentTask(params) {
       { role: 'system', content: buildSystemPrompt() },
       {
         role: 'user',
-        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps }),
+        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps: stepBudget }),
       },
     ];
 
@@ -122,6 +124,7 @@ export async function runAgentTask(params) {
     let repairs = 0;
     while (!parsed.ok && repairs < MAX_REPAIRS) {
       repairs += 1;
+      if (isCancelled()) return { status: 'stopped', steps, answer, plan };
       try {
         const repaired = await callModel(
           [
@@ -234,12 +237,13 @@ export async function runAgentTask(params) {
     }
   }
 
-  safeEmit(onEvent, { phase: 'limit', maxSteps });
+  safeEmit(onEvent, { phase: 'limit', maxSteps: stepBudget });
   return {
     status: 'done',
     steps,
-    answer: answer || `Stopped after ${maxSteps} steps — the goal may not be complete.`,
+    answer: answer || `Stopped after ${stepBudget} steps — the goal may not be complete.`,
     plan,
     limitReached: true,
+    stepsUsed: steps.length,
   };
 }
