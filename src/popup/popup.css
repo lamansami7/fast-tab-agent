@@ -98,8 +98,8 @@
 
 html,
 body {
-  width: 480px;
-  height: 690px;
+  width: 100%;
+  height: 100%;
   margin: 0;
   overflow: hidden;
 }
@@ -1989,13 +1989,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { button:not(:disabled):active, .suggestion:hover { transform: none; } }
 
 /* Workspace: keep controls and run status anchored while the transcript scrolls. */
-.fta-preview, .fta-preview body { width: 100vw; height: 100vh; }
+
 .topbar { padding-block: 14px; border-bottom: 1px solid var(--border); }
 .tabbar { margin: 10px 12px 5px; padding: 10px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
 .context-kicker { display: block; color: var(--accent-text); font-size: 9px; font-weight: 800; letter-spacing: .13em; }
 .tab-text { min-width: 0; }
 .chat { background: radial-gradient(ellipse at 50% 0%, var(--accent-soft), transparent 67%); }
-.empty { max-width: 420px; margin-inline: auto; }
+.empty { width: 100%; max-width: 420px; margin-inline: auto; }
 .empty h1 { font-size: clamp(23px, 6vw, 32px); letter-spacing: -.05em; line-height: 1.12; }
 .empty-icon { width: 52px; height: 52px; border-radius: 16px; box-shadow: 0 0 28px var(--accent-soft); }
 .suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
@@ -2019,3 +2019,21 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .overlay-head { background: linear-gradient(105deg, var(--accent-soft), transparent 80%), var(--surface); }
 .msg-user { gap: 4px; }
 .message-tool:focus-visible, .composer-tools select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Chrome's side panel is user-resizable; keep the composer anchored and let
+   its contents and the toolbar wrap without a horizontal scrollbar. */
+.composer-foot { flex-wrap: wrap; }
+@media (max-width: 380px) {
+  .topbar, .composer { padding-inline: 10px; }
+  .tabbar { gap: 5px; }
+  .chip { max-width: 108px; }
+  .composer-tools #modeNote { margin-inline-start: 0; }
+  .kbd-hint { display: none; }
+}
+
+.chat-jump { flex: none; display: flex; justify-content: flex-end; padding: 3px 12px; background: var(--bg); }
+.follow-up { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 7px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--accent-soft); color: var(--accent-text); font-size: 11px; }
+.follow-up .message-tool { margin: 0; }
+.msg-body > .message-tool { display: inline-block; margin-inline-end: 5px; }

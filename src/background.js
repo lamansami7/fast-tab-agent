@@ -170,6 +170,7 @@ function publicTask(task = currentTask) {
     tabId: task.tabId,
     tabTitle: task.tabTitle || '',
     tabHost: task.tabHost || '',
+    resultOrigin: task.resultOrigin || '',
     currentStep: task.currentStep || 0,
     currentAction: task.currentAction || null,
     currentActionLabel: task.currentActionLabel || '',
@@ -214,7 +215,13 @@ async function sendHud(tabId, state) {
 
 /* -------------------------------------------------------------- tabs/CS -- */
 
-async function getActiveTab() {
+async function getActiveTab(windowId) {
+  if (Number.isInteger(windowId) && windowId >= 0) {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, windowId });
+      return tab || null;
+    } catch { return null; }
+  }
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tab) return tab;
@@ -287,7 +294,7 @@ function taskTabMetadata(tab) {
  * is rejected here even when the popup says it granted it, so the worker never
  * assumes access it does not have.
  */
-async function resolveTargetTab(requestedTabId) {
+async function resolveTargetTab(requestedTabId, windowId) {
   let tab = null;
   if (requestedTabId !== undefined && requestedTabId !== null && requestedTabId !== '') {
     const id = Number(requestedTabId);
@@ -303,7 +310,7 @@ async function resolveTargetTab(requestedTabId) {
       );
     }
   } else {
-    tab = await getActiveTab();
+    tab = await getActiveTab(windowId);
     if (!tab || typeof tab.id !== 'number') throw new Error('No active tab found.');
   }
 
@@ -317,7 +324,7 @@ async function resolveTargetTab(requestedTabId) {
     );
   }
 
-  const active = await getActiveTab();
+  const active = await getActiveTab(windowId);
   const isActive = active && active.id === tab.id;
   if (!isActive) {
     const origin = originPatternFor(url);
@@ -340,7 +347,7 @@ async function resolveTargetTab(requestedTabId) {
  * List open tabs with only the metadata the picker needs. Page content is not
  * read here; it is read later, for the one tab the user selects.
  */
-async function tabsList() {
+async function tabsList(windowId) {
   let tabs;
   try {
     tabs = await chrome.tabs.query({});
@@ -348,7 +355,7 @@ async function tabsList() {
     throw new Error('Chrome could not list the open tabs. Try again.');
   }
 
-  const active = await getActiveTab();
+  const active = await getActiveTab(windowId);
   const hasPermissionCheck = typeof chrome.permissions?.contains === 'function';
   let hasTabsPermission = false;
   if (hasPermissionCheck) {
@@ -558,7 +565,11 @@ async function finishTask(outcome) {
   await persistTask();
 }
 
-async function startTask(goalInput, requestedTabId, requestedMode) {
+function pageOrigin(url) {
+  try { return new URL(url).origin; } catch { return ''; }
+}
+
+async function startTask(goalInput, requestedTabId, requestedMode, priorTaskId, windowId) {
   if (startingTask) throw new Error('A task is already starting. Wait a moment.');
   if (currentTask && currentTask.status === TASK_STATUS.running) {
     throw new Error('A task is already running. Stop it first.');
@@ -569,10 +580,12 @@ async function startTask(goalInput, requestedTabId, requestedMode) {
   let settings;
   let provider;
   let tab;
+  let priorResult;
+  let previousOrigin;
   try {
     // If this worker was restarted, recover an orphaned in-session task record
     // before a new run overwrites it. Tasks are not resumed automatically.
-    await taskState();
+    const previous = await taskState();
 
     goal = String(goalInput || '').trim().slice(0, LIMITS.maxTaskGoal);
     if (!goal) throw new Error('Describe what the agent should do on this page.');
@@ -591,7 +604,17 @@ async function startTask(goalInput, requestedTabId, requestedMode) {
     }
 
     await requireProviderHostPermission(provider, settings.allowPrivateHttp);
-    tab = await resolveTargetTab(requestedTabId);
+    tab = await resolveTargetTab(requestedTabId, windowId);
+    if (priorTaskId != null) {
+      const origin = pageOrigin(tab.url || tab.pendingUrl || '');
+      if (!previous || priorTaskId !== previous.id || previous.status !== TASK_STATUS.done ||
+          previous.limitReached || !previous.answer || previous.tabId !== tab.id ||
+          !origin || origin !== previous.resultOrigin) {
+        throw new Error('The previous result is no longer available for this tab and site. Start a new request without the previous result.');
+      }
+      previousOrigin = origin;
+      priorResult = { request: previous.goal.slice(0, 500), answer: previous.answer.slice(0, 1000) };
+    }
     await ensureInjected(tab.id);
 
     const metadata = taskTabMetadata(tab);
@@ -695,9 +718,20 @@ async function startTask(goalInput, requestedTabId, requestedMode) {
       const outcome = await runAgentTask({
         goal,
         mode: currentTask.mode,
+        priorResult,
         maxSteps: settings.maxSteps,
         callModel,
-        getSnapshot: () => getSnapshot(tab.id, controller.signal),
+        getSnapshot: async () => {
+          const snapshot = await getSnapshot(tab.id, controller.signal);
+          if (currentTask?.id === taskId && !controller.signal.aborted) {
+            const origin = pageOrigin(snapshot.url);
+            if (priorResult && origin !== previousOrigin) {
+              throw new Error('This tab changed sites. Start a new request to continue without sharing the previous result.');
+            }
+            currentTask.resultOrigin = origin || '';
+          }
+          return snapshot;
+        },
         executeAction: (action, snapshot) => executeActionOnTab(tab.id, action, snapshot, controller.signal),
         onEvent,
         signal: controller.signal,
@@ -836,8 +870,8 @@ async function providerModels(message) {
 
 /* ---------------------------------------------------------------- router -- */
 
-async function appInfo() {
-  const tab = await getActiveTab();
+async function appInfo(windowId) {
+  const tab = await getActiveTab(windowId);
   const settings = await getSettings();
   const rawUrl = tab?.url || tab?.pendingUrl || '';
   const check = classifyTabUrl(rawUrl);
@@ -895,27 +929,27 @@ const handlers = {
   'providers:models': (message) => providerModels(message),
   'settings:get': async () => ({ settings: await getSettings() }),
   'settings:save': (message) => saveSettings(message.settings || message.patch || {}).then((settings) => ({ settings })),
-  'task:start': (message) => startTask(message.goal, message.tabId, message.mode),
+  'task:start': (message) => startTask(message.goal, message.tabId, message.mode, message.priorTaskId, message.windowId),
   'task:stop': async () => ({ task: stopTask() }),
   'task:state': () => taskState(),
-  'tabs:list': () => tabsList(),
-  'app:info': () => appInfo(),
+  'tabs:list': (message) => tabsList(message.windowId),
+  'app:info': (message) => appInfo(message.windowId),
 };
 
-function isPopupSender(sender) {
+function isWorkspaceSender(sender) {
   if (sender?.id !== chrome.runtime.id || typeof sender.url !== 'string') return false;
-  const popupUrl = chrome.runtime.getURL('src/popup/popup.html');
-  return sender.url === popupUrl;
+  const workspaceUrl = chrome.runtime.getURL('src/popup/popup.html');
+  return sender.url === workspaceUrl;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
-  // Provider records (and especially keys) are returned only to the popup.
+  // Provider records (and especially keys) are returned only to the extension workspace.
   // The injected page agent may request task cancellation for its own tab, but
   // it cannot call provider/settings/task-start APIs.
   const hudStop = message.type === 'task:stop' && message.source === 'hud' &&
     sender?.id === chrome.runtime.id && sender?.tab?.id === currentTask?.tabId;
-  if (!isPopupSender(sender) && !hudStop) return false;
+  if (!isWorkspaceSender(sender) && !hudStop) return false;
   const handler = handlers[message.type];
   if (!handler) return false;
 
@@ -932,7 +966,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+function configureSidePanel() {
+  // Chrome owns the edge panel, so it stays open when the page gets focus.
+  chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {
+    console.warn('Fast Tab Agent could not enable toolbar opening for the side panel.', error);
+  });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
+  configureSidePanel();
   ensureInit()
     .then(async () => {
       const settings = await chrome.storage.local.get(STORAGE_KEYS.settings);
@@ -944,6 +986,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  configureSidePanel();
   void ensureInit().catch(() => {});
 });
 

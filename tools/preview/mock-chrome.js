@@ -6,7 +6,6 @@
  * interface can be reviewed without loading the unpacked extension.
  */
 (function () {
-  document.documentElement.classList.add('fta-preview');
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clone = (value) => JSON.parse(JSON.stringify(value));
 

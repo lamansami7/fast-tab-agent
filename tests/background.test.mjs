@@ -18,6 +18,9 @@ const session = createStorageArea();
 const runtimeListeners = [];
 const broadcasts = [];
 const executed = [];
+const installListeners = [];
+const startupListeners = [];
+const panelBehaviors = [];
 const fetchCalls = [];
 const sentTabMessages = [];
 const permissionChecks = [];
@@ -59,6 +62,7 @@ const tabs = [
   {
     id: 10,
     windowId: 2,
+    active: true,
     index: 0,
     status: 'complete',
     title: '',
@@ -115,12 +119,13 @@ globalThis.chrome = {
       );
     },
   },
+  sidePanel: { setPanelBehavior: async (behavior) => panelBehaviors.push(behavior) },
   runtime: {
     id: 'test-extension',
     getURL: (path) => `chrome-extension://test-extension/${path}`,
     onMessage: { addListener: (fn) => runtimeListeners.push(fn) },
-    onInstalled: { addListener: () => {} },
-    onStartup: { addListener: () => {} },
+    onInstalled: { addListener: (fn) => installListeners.push(fn) },
+    onStartup: { addListener: (fn) => startupListeners.push(fn) },
     getManifest: () => ({ version: '1.0.0' }),
     getPlatformInfo: (callback) => callback && callback({}),
     lastError: undefined,
@@ -130,7 +135,7 @@ globalThis.chrome = {
     },
   },
   tabs: {
-    query: async () => tabs,
+    query: async ({ windowId }) => windowId == null ? tabs : tabs.filter((item) => item.windowId === windowId && item.active),
     get: async (tabId) => {
       const found = findTab(tabId);
       if (!found) throw new Error(`No tab with id ${tabId}`);
@@ -564,4 +569,45 @@ test('navigation observes the new top-level document before the next model turn'
     tab.url = original;
     firstModelAction = { type: 'click', elementId: 1 };
   }
+});
+
+
+test('configures toolbar opening of the persistent Chrome side panel', () => {
+  for (const callback of [...installListeners, ...startupListeners]) callback();
+  assert.deepEqual(panelBehaviors, [{ openPanelOnActionClick: true }, { openPanelOnActionClick: true }]);
+});
+
+
+test('follow-ups use only the completed result from the same tab and origin', async () => {
+  modelCalls = 1;
+  const parent = await send('task:start', { goal: 'Inspect the shop catalogue', mode: 'read' });
+  assert.equal(parent.ok, true);
+  const completed = await waitForTask();
+  assert.equal(completed.resultOrigin, 'https://shop.example.com');
+  const original = tab.url;
+  try {
+    tab.url = 'https://shop.example.com:8443/products';
+    const rejected = await send('task:start', { goal: 'Shorter please', priorTaskId: completed.id });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error.message, /no longer available/);
+  } finally {
+    tab.url = original;
+  }
+  fetchCalls.length = 0;
+  const follow = await send('task:start', { goal: 'Shorter please', mode: 'read', priorTaskId: completed.id });
+  assert.equal(follow.ok, true);
+  await waitForTask();
+  assert.match(fetchCalls[0].body.messages[1].content, /PRIOR RUN.*untrusted/);
+  assert.match(fetchCalls[0].body.messages[1].content, /Inspect the shop catalogue/);
+  assert.match(fetchCalls[0].body.messages[1].content, /Searched the catalogue/);
+});
+
+
+test('side panels resolve the active tab in their own browser window', async () => {
+  const response = await send('tabs:list', { windowId: 2 });
+  assert.equal(response.ok, true);
+  assert.equal(response.data.activeTabId, 10);
+  assert.equal(response.data.tabs.find((item) => item.id === 7).active, false);
+  const info = await send('app:info', { windowId: 1 });
+  assert.equal(info.data.tab.id, 7);
 });

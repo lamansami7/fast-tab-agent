@@ -48,6 +48,7 @@ export async function runAgentTask(params) {
   const {
     goal,
     mode = 'act',
+    priorResult,
     maxSteps,
     callModel,
     getSnapshot,
@@ -107,7 +108,7 @@ export async function runAgentTask(params) {
       { role: 'system', content: systemPrompt },
       {
         role: 'user',
-        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps: stepBudget, note: recoveryNote, plan, mode }),
+        content: buildUserPrompt({ goal, snapshot, history, step, maxSteps: stepBudget, note: recoveryNote, plan, mode, priorResult }),
       },
     ];
 
@@ -229,7 +230,7 @@ export async function runAgentTask(params) {
 
     let outcome;
     try {
-      outcome = mode === 'read' && !['extract', 'wait'].includes(action.type)
+      outcome = mode === 'read' && !['extract', 'find', 'wait'].includes(action.type)
         ? { ok: false, observation: 'Read-only mode blocked the action. Answer from this page without changing it.' }
         : await executeAction(action, snapshot);
     } catch (error) {
